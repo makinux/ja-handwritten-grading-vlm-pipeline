@@ -16,6 +16,13 @@ import unicodedata
 
 NUM_RE = re.compile(r"-?\d+")
 
+CONFIG = {
+    # 一次方程式の正解に分数解を許す。text-only プローブが検出した
+    # 「正解は常に整数解→分数の出現が誤りを示唆する」というテキストリーク
+    # の除去(人工的な分布均衡化ではなく、生成器の非現実的制約の撤廃)。
+    "linear_fraction_golds": True,
+}
+
 # ---------------------------------------------------------------- formatting
 
 
@@ -58,9 +65,14 @@ def mut_spec(op_id, site, err_type, severity, payload=None):
 
 def gen_linear_problem(rng):
     a = rng.choice([2, 3, 4, 5, -2, -3])
-    x = rng.randint(-9, 9)
     b = rng.choice([v for v in range(-9, 10) if v != 0])
-    c = a * x + b
+    if CONFIG["linear_fraction_golds"] and rng.random() < 0.4:
+        c = rng.randint(-20, 20)
+        if (c - b) % abs(a) == 0:  # 非整数解を強制
+            c += 1
+    else:
+        x = rng.randint(-9, 9)
+        c = a * x + b
     params = {"a": a, "b": b, "c": c}
     tk = Tok()
     sb = "+" if b > 0 else "-"
@@ -335,7 +347,7 @@ def make_record(idx, problem, mut, rng):
                           "normalization": "NFKC+strip-space"},
         "score_gt": {"full": 10, "awarded": awarded},
         "control_flag": {"error_free": mut is None},
-        "provenance": {"pipeline": "phase0-bootstrap-v0.1", "gates_passed": []},
+        "provenance": {"pipeline": "phase0-bootstrap-v0.2", "gates_passed": []},
     }
 
 
@@ -366,15 +378,28 @@ def g1_gate(problem):
     # (b) 逐語化照合: テキスト中の数値トークン列 == プログラム登録トークン列
     if NUM_RE.findall(problem["problem_text"]) != problem["problem_numbers"]:
         reasons.append("G1b: 問題文の数値がプログラム値と不一致")
-    for s in steps:
-        if NUM_RE.findall(s["text"]) != s["numbers"]:
-            reasons.append(f"G1b: {s['step_id']} の数値が不一致")
+    for sid in g1b_check_texts(steps, [s["text"] for s in steps]):
+        reasons.append(f"G1b: {sid} の数値が不一致")
 
     # (c) スキーマ
     for k in ("domain", "problem_text", "answer_key", "params"):
         if k not in problem:
             reasons.append(f"G1c: フィールド欠落 {k}")
     return (len(reasons) == 0), reasons
+
+
+def g1b_check_texts(steps, texts):
+    """逐語化照合の本体(LLM 逐語化の受け入れゲート)。
+
+    steps はプログラム由来の期待トークン列(numbers)を持つ。texts は
+    検査対象の日本語文(将来は LLM 出力)。数値トークン列が期待と一致しない
+    ステップ ID のリストを返す。数値を含まない言い換えは通す(良性)。
+    """
+    fails = []
+    for s, t in zip(steps, texts):
+        if NUM_RE.findall(t) != s["numbers"]:
+            fails.append(s["step_id"])
+    return fails
 
 
 # ---------------------------------------------------------------------- G2

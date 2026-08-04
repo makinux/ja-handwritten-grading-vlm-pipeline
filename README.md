@@ -20,7 +20,13 @@
 - `rewards.py` — 7 項目報酬(正規化 CER+over-correction 罰、検出、IoU、種別、点数、コメント接地、形式)
 - `adversarial_reward_test.py` — **報酬の敵対的テスト**(不正出力 1,000 件で逆転率 < 1% をモデル訓練前に検証。パネル条件 6)
 - `kpi_montecarlo.py` — **KPI 整合モンテカルロ**(点数完全一致 80% の実現可能領域。パネル実測パッケージ項目 H)
-- `run_phase0_bootstrap.py` — 一括実行(200 サンプル生成 → ゲート → レンダリング → 検収 → テスト → `out/phase0_report.md`)
+- `verbalizer.py` — 逐語化の差し替え点(テンプレート実装+vLLM/Qwen3.6 用 OpenAI 互換クライアントの**実機未検証スタブ**)とフォルト注入
+- `gate_efficacy_test.py` — **G1 ゲート実効性実測**(数値改変・符号落とし=検出すべき/良性言い換え=通すべき。「通過率でなくゲート精度を測る」)
+- `textonly_probe.py` — **text-only プローブ**(項目 D。文字 bigram NB、pair 単位グループ分割。生成器リークの診断)
+- `collection_plan.py` — 統合収集プログラム(1,350 枚)の割付表生成 → `docs/collection_plan.csv`
+- `run_phase0_bootstrap.py` — 一括実行(200 サンプル生成 → ゲート → レンダリング → 検収 → 敵対的テスト → ゲート実効性 → プローブ → `out/phase0_report.md`)
+
+`docs/` — 統合収集プログラム計画書(割付表+同意書チェックリスト)、入力契約ドラフト(C1 フル/C2 最小の 2 条件、step_id 意味論)。
 
 ## 実行(Docker)
 
@@ -31,7 +37,11 @@ docker run --rm -v "$(pwd):/work" ja-grading-phase0
 
 PowerShell の場合は `-v "${PWD}:/work"`。**Git Bash(MSYS)からはパス変換でマウントが静かに失敗することがある**ため、`MSYS_NO_PATHCONV=1` を付けるか PowerShell を使うこと。成果物は `out/`(dataset.jsonl / images / debug / phase0_report.md)に出力される。
 
-既知のチューニング・バックログ: 報酬の敵対的テストは合格(逆転率 0.10% < 1%)だが、`comment_stuffing`(+0.004 で 1 件逆転)と `over_correct`(余裕 0.012)のマージンが薄い。コメント接地の precision 重視化と over-correction 罰の増強を Phase 1 の報酬チューニングで扱う。
+報酬の敵対的テストは、モデル訓練前に実バグを 3 件検出し、いずれも修正済み:
+(1) コメント接地の一様 F1 が種別全列挙(水増し)に僅差で逆転される(+0.004)→ F0.5+全列挙罰へ。
+(2) over-correction 罰のサイト文**部分文字列判定**が、短いサイト文("x=1")が他行("3x=12")に偶然含まれるケースで素通し(引き分け +0.000)。
+(3) 置換した**全文 CER 比較判定**は、正当出力のタイポが偶然変異文字に当たると正当出力を誤罰(逆転 8 件に悪化)。
+→ 最終形は**行単位のスパン局所判定**(サイト文に最も近い転記行が gold 側と mut 側のどちらに編集距離で近いか)。現行マージンは全ファミリ負(over_correct -0.200)。`out/phase0_report.md` 参照。
 
 ローカル実行(開発時): Python 3.12+ と Pillow があれば `python pipeline/run_phase0_bootstrap.py`。
 

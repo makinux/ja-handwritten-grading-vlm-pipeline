@@ -20,20 +20,27 @@ WEIGHTS = {
 }
 
 
-def cer(ref, hyp):
-    """文字誤り率(Levenshtein / len(ref))。"""
-    n, m = len(ref), len(hyp)
+def lev(a, b):
+    """Levenshtein 距離。"""
+    n, m = len(a), len(b)
     if n == 0:
-        return 0.0 if m == 0 else 1.0
+        return m
     prev = list(range(m + 1))
     for i in range(1, n + 1):
         cur = [i] + [0] * m
-        rc = ref[i - 1]
+        ac = a[i - 1]
         for j in range(1, m + 1):
-            cost = 0 if rc == hyp[j - 1] else 1
+            cost = 0 if ac == b[j - 1] else 1
             cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
         prev = cur
-    return prev[m] / n
+    return prev[m]
+
+
+def cer(ref, hyp):
+    """文字誤り率(Levenshtein / len(ref))。"""
+    if len(ref) == 0:
+        return 0.0 if len(hyp) == 0 else 1.0
+    return lev(ref, hyp) / len(ref)
 
 
 def iou(a, b):
@@ -77,13 +84,27 @@ def reward_components(rec, out):
     hyp = normalize_text(out["transcript"])
     t_reward = max(0.0, 1.0 - cer(ref, hyp))
     if has_err:
+        # over-correction 判定(スパン局所): 転記の各行のうちサイト文に最も
+        # 近い行を取り、その行が「紙に書かれた誤答(mut_site)」より
+        # 「修正後の正解(gold_site)」に編集距離で厳密に近い場合のみ罰する。
+        # 履歴: (1) 部分文字列判定は短いサイト文("x=1")が他行("3x=12")に
+        # 偶然含まれると素通し。(2) 全文 CER 比較は、正当出力のタイポが偶然
+        # 変異文字に当たると(1 文字変異では gold と mut が距離 1 のため)
+        # 正当出力を誤罰。いずれも敵対的テストが検出→行単位の局所判定へ。
+        # 1 文字変異へのタイポは gold/mut と同距離になり罰されない。
+        # 罰は 0.8(原則 5 の中核リスク)。
         site = rec["injected_errors"][0]["mutation_site"]
         gold_site = normalize_text(
             {s["step_id"]: s["text"] for s in rec["gold_solution"]}[site])
         mut_site = normalize_text(
             {s["step_id"]: s["text"] for s in rec["mutant_solution"]}[site])
-        if gold_site != mut_site and gold_site in hyp and mut_site not in hyp:
-            t_reward = max(0.0, t_reward - 0.5)  # 誤りを勝手に「修正」した
+        hyp_lines = [normalize_text(l) for l in out["transcript"].splitlines()]
+        hyp_lines = [l for l in hyp_lines if l]
+        if hyp_lines and gold_site != mut_site:
+            best = min(hyp_lines,
+                       key=lambda l: min(lev(l, mut_site), lev(l, gold_site)))
+            if lev(best, gold_site) < lev(best, mut_site):
+                t_reward = max(0.0, t_reward - 0.8)
     comps["transcript"] = t_reward
 
     # --- 誤り有無(過剰報告への罰つき)
@@ -134,8 +155,15 @@ def reward_components(rec, out):
         tp = len(gt_refs & pr)
         prec = tp / len(pr)
         recall = tp / len(gt_refs)
-        comps["comment"] = (2 * prec * recall / (prec + recall)
-                            if prec + recall else 0.0)
+        # F0.5(precision 重視)+種別全列挙(水増し)への明示罰。
+        # 一様 F1 では comment_stuffing が正当出力を +0.004 上回る逆転を
+        # 敵対的テストが検出したため precision 側を強化
+        b2 = 0.25
+        f = ((1 + b2) * prec * recall / (b2 * prec + recall)
+             if (b2 * prec + recall) else 0.0)
+        if len(pr) > 2 * max(1, len(gt_refs)):
+            f *= 0.2
+        comps["comment"] = f
 
     comps["total"] = sum(WEIGHTS[k] * comps[k] for k in WEIGHTS)
     return comps

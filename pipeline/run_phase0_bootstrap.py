@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import gen_core
 import m3_render
 from adversarial_reward_test import run_adversarial_test
+from gate_efficacy_test import run_gate_efficacy
 from kpi_montecarlo import grid_report
+from textonly_probe import run_probe
 
 SEED = 20260804
 N_TOTAL = 200
@@ -84,6 +86,20 @@ def main():
     print(f"[adv] trials={adv['n_trials']} inversions={adv['n_inversions']} "
           f"rate={adv['inversion_rate']:.4f} pass={adv['pass']}")
 
+    # ---- G1 ゲート実効性(フォルト注入。「通過率でなく精度を測る」)
+    ge = run_gate_efficacy(seed=SEED)
+    print(f"[gate] recall digit={ge['recall_digit_change']:.3f} "
+          f"minus={ge['recall_minus_drop']:.3f} "
+          f"false_reject clean={ge['false_reject_clean']:.3f} "
+          f"benign={ge['false_reject_benign_paraphrase']:.3f} "
+          f"pass={ge['pass']}")
+
+    # ---- text-only プローブ(項目 D): 生成器リーク修正の前後比較
+    probe_fixed = run_probe(2000, seed=777, fraction_golds=True)
+    probe_legacy = run_probe(2000, seed=777, fraction_golds=False)
+    print(f"[probe] AUC fixed={probe_fixed['auc']:.3f} "
+          f"legacy={probe_legacy['auc']:.3f}")
+
     # ---- KPI モンテカルロ(項目 H)
     mc = grid_report()
 
@@ -126,22 +142,48 @@ G1/G2 の通過率が高いのは想定どおり。ゲートが実働するの�
 |---|---|---|---|
 {fam}
 
+## G1 ゲート実効性(フォルト注入。パネル「通過率でなくゲート精度を測れ」対応)
+
+| 系(各 200 件) | 期待動作 | 実測 |
+|---|---|---|
+| クリーン | 通す | 誤棄却率 {ge['false_reject_clean']:.3f} |
+| 良性言い換え(数値不変) | 通す | 誤棄却率 {ge['false_reject_benign_paraphrase']:.3f} |
+| 数値改変(1 桁ハルシネーション) | 棄却 | 検出率 {ge['recall_digit_change']:.3f} |
+| 符号落とし(負号の欠落) | 棄却 | 検出率 {ge['recall_minus_drop']:.3f} |
+
+基準(検出 ≥0.99 かつ誤棄却 ≤0.01)に **{"合格" if ge['pass'] else "不合格"}**。
+LLM 逐語化(Qwen3.6)接続後は同じハーネスを実出力に対して回す
+(接続点は `verbalizer.LLMVerbalizer`、実機未検証スタブ)。
+
+## text-only プローブ(項目 D・診断)
+
+- 旧生成器(一次方程式の正解が常に整数解): AUC **{probe_legacy['auc']:.3f}**
+  — 「分数の出現≒誤り」という生成器由来の強リークを検出
+- 修正後(分数解の正解を 40% 許可=非現実的制約の撤廃): AUC **{probe_fixed['auc']:.3f}**
+- 修正後の上位識別 bigram(誤り側頻度/対照側頻度): {probe_fixed['top_error_bigrams'][:5]}
+- 位置づけ: これは**診断であり合否閾値ではない**(設計書 v2.1 §3 M6)。残る
+  予測可能性には「誤りが式を複雑化させる」という正当な因果信号が含まれる。
+  最終判定は容量整合対照(同規模テキスト専用モデル vs VLM)で行う(Phase 1)。
+
 ## KPI 整合モンテカルロ(項目 H)
 
 {mc}
 
 ## 既知の縮小(スタブ)と TODO
 
-- LLM 逐語化・LLM 層オペレータ(概念誤りの自由生成)は未接続(テンプレート実装)
-- 字形は暫定フォント(自前収集字形バンク=統合収集プログラム待ち)
+- LLM 逐語化は接続点のみ(`verbalizer.LLMVerbalizer`。vLLM 未接続・実機未検証)。
+  LLM 層オペレータ(概念誤りの自由生成)は未実装
+- 字形は暫定フォント(自前収集字形バンク=統合収集プログラム待ち。割付表は
+  docs/collection_plan.csv)
 - 撮像層は簡易ノイズのみ/縦書き・分数 2 次元レイアウト未実装
+- 入力契約は docs/input_contract.md のドラフト(チーム確定要)
 - **教員間一致 r の実測は TODO(教員手配待ち)** — タスク #1
 """
     rp = os.path.join(OUT, "phase0_report.md")
     with open(rp, "w", encoding="utf-8") as f:
         f.write(report)
     print(f"[done] report: {rp}")
-    return 0 if (iou_gt_ok and adv["pass"]) else 1
+    return 0 if (iou_gt_ok and adv["pass"] and ge["pass"]) else 1
 
 
 if __name__ == "__main__":
