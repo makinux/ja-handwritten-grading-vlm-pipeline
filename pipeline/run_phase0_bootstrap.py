@@ -92,6 +92,7 @@ def main():
           f"minus={ge['recall_minus_drop']:.3f} "
           f"false_reject clean={ge['false_reject_clean']:.3f} "
           f"benign={ge['false_reject_benign_paraphrase']:.3f} "
+          f"verbose={ge['false_reject_verbose_faithful']:.3f} "
           f"pass={ge['pass']}")
 
     # ---- text-only プローブ(項目 D): 生成器リーク修正の前後比較
@@ -148,6 +149,7 @@ G1/G2 の通過率が高いのは想定どおり。ゲートが実働するの�
 |---|---|---|
 | クリーン | 通す | 誤棄却率 {ge['false_reject_clean']:.3f} |
 | 良性言い換え(数値不変) | 通す | 誤棄却率 {ge['false_reject_benign_paraphrase']:.3f} |
+| 饒舌だが忠実(既知数値の再言及) | 通す | 誤棄却率 {ge['false_reject_verbose_faithful']:.3f} |
 | 数値改変(1 桁ハルシネーション) | 棄却 | 検出率 {ge['recall_digit_change']:.3f} |
 | 符号落とし(負号の欠落) | 棄却 | 検出率 {ge['recall_minus_drop']:.3f} |
 

@@ -389,15 +389,28 @@ def g1_gate(problem):
 
 
 def g1b_check_texts(steps, texts):
-    """逐語化照合の本体(LLM 逐語化の受け入れゲート)。
+    """逐語化照合 v2 の本体(LLM 逐語化の受け入れゲート)。
 
-    steps はプログラム由来の期待トークン列(numbers)を持つ。texts は
-    検査対象の日本語文(将来は LLM 出力)。数値トークン列が期待と一致しない
-    ステップ ID のリストを返す。数値を含まない言い換えは通す(良性)。
+    各文で期待トークン列(numbers)が抽出列の部分列になり、かつ抽出された
+    全トークンが全ステップの既知数値(符号反転を含む)であることを確認する。
+    どちらかを満たさないステップ ID のリストを返す。
     """
+    known = set()
+    for s in steps:
+        for token in s["numbers"]:
+            known.add(token)
+            known.add(token[1:] if token.startswith("-") else "-" + token)
+
     fails = []
-    for s, t in zip(steps, texts):
-        if NUM_RE.findall(t) != s["numbers"]:
+    for s, text in zip(steps, texts):
+        actual = NUM_RE.findall(text)
+        expected = s["numbers"]
+        expected_pos = 0
+        for token in actual:
+            if expected_pos < len(expected) and token == expected[expected_pos]:
+                expected_pos += 1
+        if (expected_pos != len(expected)
+                or any(token not in known for token in actual)):
             fails.append(s["step_id"])
     return fails
 

@@ -120,3 +120,20 @@ def inject_benign_paraphrase(texts, rng):
     prefix = rng.choice(["よって ", "したがって ", "ゆえに "])
     out[i] = prefix + out[i]
     return out, i
+
+
+def inject_verbose_faithful(texts, rng):
+    """既知数値を説明で再言及する良性の逐語化: G1 は通すべき。"""
+    out = list(texts)
+    known = [token for text in texts for token in NUM_RE.findall(text)]
+    token = rng.choice(known)
+    if rng.choice([False, True]):
+        token = token[1:] if token.startswith("-") else "-" + token
+    i = rng.randrange(len(out))
+    prefix = rng.choice([
+        f"両辺から {token} を引くと、",
+        f"両辺を {token} で割って、",
+        f"左辺の {token} を消すために、",
+    ])
+    out[i] = prefix + out[i]
+    return out, i

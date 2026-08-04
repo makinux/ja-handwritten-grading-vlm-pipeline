@@ -12,7 +12,7 @@ import random
 import gen_core
 from gen_core import DOMAINS, g1b_check_texts
 from verbalizer import (inject_benign_paraphrase, inject_digit_change,
-                        inject_minus_drop)
+                        inject_minus_drop, inject_verbose_faithful)
 
 
 def run_gate_efficacy(seed=20260804, n_per_arm=200):
@@ -20,6 +20,7 @@ def run_gate_efficacy(seed=20260804, n_per_arm=200):
     arms = {
         "clean": {"n": 0, "flagged": 0},               # 誤棄却を測る
         "benign_paraphrase": {"n": 0, "flagged": 0},   # 誤棄却を測る
+        "verbose_faithful": {"n": 0, "flagged": 0},     # 誤棄却を測る
         "digit_change": {"n": 0, "flagged": 0},        # 検出を測る
         "minus_drop": {"n": 0, "flagged": 0},          # 検出を測る
     }
@@ -36,6 +37,8 @@ def run_gate_efficacy(seed=20260804, n_per_arm=200):
                 texts, _ = inject_minus_drop(texts, rng)
             elif arm == "benign_paraphrase":
                 texts, _ = inject_benign_paraphrase(texts, rng)
+            elif arm == "verbose_faithful":
+                texts, _ = inject_verbose_faithful(texts, rng)
             flagged = bool(g1b_check_texts(steps, texts))
             arms[arm]["n"] += 1
             arms[arm]["flagged"] += flagged
@@ -45,12 +48,16 @@ def run_gate_efficacy(seed=20260804, n_per_arm=200):
     fr_clean = arms["clean"]["flagged"] / arms["clean"]["n"]
     fr_benign = arms["benign_paraphrase"]["flagged"] / \
         arms["benign_paraphrase"]["n"]
+    fr_verbose = arms["verbose_faithful"]["flagged"] / \
+        arms["verbose_faithful"]["n"]
     return {
         "arms": arms,
         "recall_digit_change": recall_digit,
         "recall_minus_drop": recall_minus,
         "false_reject_clean": fr_clean,
         "false_reject_benign_paraphrase": fr_benign,
+        "false_reject_verbose_faithful": fr_verbose,
         "pass": (recall_digit >= 0.99 and recall_minus >= 0.99
-                 and fr_clean <= 0.01 and fr_benign <= 0.01),
+                 and fr_clean <= 0.01 and fr_benign <= 0.01
+                 and fr_verbose <= 0.01),
     }
