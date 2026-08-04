@@ -26,7 +26,15 @@
 - `collection_plan.py` — 統合収集プログラム(1,350 枚)の割付表生成 → `docs/collection_plan.csv`
 - `run_phase0_bootstrap.py` — 一括実行(200 サンプル生成 → ゲート → レンダリング → 検収 → 敵対的テスト → ゲート実効性 → プローブ → `out/phase0_report.md`)
 
-`docs/` — 統合収集プログラム計画書(割付表+同意書チェックリスト)、入力契約ドラフト(C1 フル/C2 最小の 2 条件、step_id 意味論)。
+`docs/` — 統合収集プログラム計画書(割付表+同意書チェックリスト)、入力契約ドラフト(C1 フル/C2 最小の 2 条件、step_id 意味論)、**ハードウェア計画(EVO-X2 単機・予算ゼロ運用パス)**。
+
+## 現在の実行環境方針(予算ゼロ)
+
+訓練用 H100 は当面調達しないため、[docs/hardware_plan.md](docs/hardware_plan.md) の
+**EVO-X2 単機パス**で進行する:LLM 逐語化・生成・ゲート実測・ゼロショットベースラインは
+EVO-X2(llama.cpp+Qwen3.6-35B-A3B GGUF)、小規模訓練は 2B LoRA(ROCm 実験枠/Kaggle 無料枠)、
+後段最適化は RAFT/DPO を先行(GRPO・8B 高速反復・32B・V4-Flash 判定は予算確保後の条件付き工程として凍結)。
+機材到着後の最初の一歩は `python pipeline/llm_smoke_test.py`(接続+G1b 実測)。
 
 ## 実行(Docker)
 
