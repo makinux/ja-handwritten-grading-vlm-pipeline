@@ -6,7 +6,8 @@
 
 - TemplateVerbalizer : 現行のテンプレート逐語化(gen_core が生成した text を
   そのまま用いる)。ブートストラップの既定。
-- LLMVerbalizer      : vLLM の OpenAI 互換 API(Qwen3.6 系)を呼ぶクライアント。
+- LLMVerbalizer      : 説明句を vLLM の OpenAI 互換 API(Qwen3.6 系)で生成し、
+  gen_core が生成した式を後置して逐語化するクライアント。
   環境変数 VLLM_BASE_URL(例 http://gpu-host:8000/v1)と VLLM_MODEL を要する。
   ※ GPU サーバ未接続のため実機未検証。接続後は必ず g1b_check_texts の
   ゲートを通してから採用すること(原則 2: LLM 出力は検証ゲートを通過する
@@ -18,7 +19,22 @@ import os
 import random
 import urllib.request
 
-from gen_core import NUM_RE
+from gen_core import NUM_RE, normalize_text
+
+
+def _temperature():
+    """vLLM 呼び出しに使う temperature を環境変数から返す。"""
+    return float(os.environ.get("VLLM_TEMPERATURE", "0.3"))
+
+
+def _compose_step_text(explanation, template):
+    """LLM の説明句に、未包含の場合だけ正解の式テンプレートを後置する。"""
+    explanation = explanation.strip()
+    if explanation.endswith("。"):
+        explanation = explanation[:-1]
+    if normalize_text(template) in normalize_text(explanation):
+        return explanation
+    return explanation + template
 
 
 class TemplateVerbalizer:
@@ -47,12 +63,12 @@ class FakeVerbalizer:
 class LLMVerbalizer:
     """vLLM(OpenAI 互換)クライアント。
 
-    プロンプトはプログラムのステップ構造を渡し、数値を一切変えずに
-    自然な日本語へ言い換えるよう指示する。出力は g1b_check_texts で検証する。
+    プロンプトは各式の直前に置く短い説明句だけを生成させ、正しい式テンプレートを
+    プログラム側で後置する。出力は g1b_check_texts で検証する。
     thinking は既定で無効化し、VLLM_ENABLE_THINKING=1 の場合のみサーバ既定に戻す。
 
     環境変数: VLLM_BASE_URL / VLLM_MODEL / VLLM_MAX_TOKENS /
-    VLLM_ENABLE_THINKING / VLLM_TIMEOUT
+    VLLM_ENABLE_THINKING / VLLM_TIMEOUT / VLLM_TEMPERATURE
     """
 
     name = "llm"
@@ -72,7 +88,7 @@ class LLMVerbalizer:
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7,
+            "temperature": _temperature(),
             "response_format": {"type": "json_object"},
             "max_tokens": self.max_tokens,
         }
@@ -89,24 +105,27 @@ class LLMVerbalizer:
             raise ValueError(
                 "LLM 応答の content が空(thinking による文脈枯渇の可能性。"
                 "VLLM_MAX_TOKENS/サーバの -c を確認)")
-        texts = json.loads(content)["steps"]
-        if len(texts) != len(steps):
+        explanations = json.loads(content)["steps"]
+        if len(explanations) != len(steps):
             raise ValueError("LLM 逐語化のステップ数が不一致")
-        return texts
+        return [
+            _compose_step_text(explanation, step["text"])
+            for explanation, step in zip(explanations, steps)
+        ]
 
     @staticmethod
     def _build_prompt(problem, steps):
         lines = [
-            "次の数学の解答ステップを、中学生が書く自然な日本語の答案文にしてください。",
-            "各ステップには、与えたステップの数式を一字一句そのまま含め、",
-            "その前後に自然な説明を書き添えてください。式の数値・記号を変えないでください。",
-            "出力は JSON {\"steps\": [各ステップの文字列]} のみ。",
+            "次の数学の解答ステップについて、各ステップの式の直前に置く短い説明句を書いてください。",
+            "各ステップの式はこちらで後置するので、式そのものは書かないでください。",
+            "「次に掛け算を計算すると、」「両辺から 6 を引いて、」のように、",
+            "式に自然につながる形（読点や「と」など）で終わる説明句にしてください。",
+            "数値に言及する場合は、与えたステップに現れる数値のみを使ってください。",
+            "答えのステップは「したがって、」のような結びの句でかまいません。",
+            "出力は JSON {\"steps\": [各ステップの説明句]} のみ。",
             f"問題: {problem['problem_text']}",
             "ステップ:",
         ]
-        lines.insert(
-            3,
-            "'$' や LaTeX 記法は使わず、ふつうの書き方(例: 3x = 4 + 6)で式を書くこと。")
         for s in steps:
             lines.append(f"- {s['step_id']}: {s['text']}")
         return "\n".join(lines)

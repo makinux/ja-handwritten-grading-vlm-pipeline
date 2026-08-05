@@ -457,8 +457,9 @@ def g1b_check_texts(steps, texts):
     """逐語化照合 v2 の本体(LLM 逐語化の受け入れゲート)。
 
     各文で期待トークン列(numbers)が抽出列の部分列になり、かつ抽出された
-    全トークンが全ステップの既知数値(符号反転を含む)であり、さらに
-    テンプレート式そのものが候補文に含まれることを確認する。
+    全トークンが全ステップの既知数値(符号反転を含む)であることを確認する。
+    answer 以外はテンプレート式そのものの包含も要求し、answer は「答」の
+    文字と最終値トークンの包含を要求する。
     いずれかを満たさないステップ ID のリストを返す。
     """
     known = set()
@@ -476,9 +477,14 @@ def g1b_check_texts(steps, texts):
         for token in actual:
             if expected_pos < len(expected) and token == expected[expected_pos]:
                 expected_pos += 1
+        if s.get("op") == "answer":
+            form_ok = ("答" in normalize_text(text)
+                       and bool(expected) and expected[-1] in actual)
+        else:
+            form_ok = normalize_text(template) in normalize_text(text)
         if (expected_pos != len(expected)
                 or any(token not in known for token in actual)
-                or normalize_text(template) not in normalize_text(text)):
+                or not form_ok):
             fails.append(s["step_id"])
     return fails
 
@@ -613,7 +619,7 @@ def _verbalize_kept_pairs(kept, verbalizer, retries):
                 gold_step["text_template"] = gold_templates[gold_step["step_id"]]
                 gold_step["text"] = gold_by_id[gold_step["step_id"]]
 
-            record_fallback = list(gold_fallback)
+            mutant_fallback = []
             if not record["control_flag"]["error_free"]:
                 error = record["injected_errors"][0]
                 affected = set([error["mutation_site"]] +
@@ -635,13 +641,18 @@ def _verbalize_kept_pairs(kept, verbalizer, retries):
                         "text_template", mutant_step["text"])
                     mutant_step["text"] = (mutant_by_id[sid] if sid in affected
                                            else gold_by_id[sid])
-                record_fallback.extend(mutant_fallback)
                 respan_after_verbalization(record)
 
-            record_fallback = _ordered_step_ids(record, record_fallback)
+            fallback_parts = []
+            ordered_gold_fallback = _ordered_step_ids(record, gold_fallback)
+            ordered_mutant_fallback = _ordered_step_ids(record, mutant_fallback)
+            if ordered_gold_fallback:
+                fallback_parts.append("gold:" + ",".join(ordered_gold_fallback))
+            if ordered_mutant_fallback:
+                fallback_parts.append("mut:" + ",".join(ordered_mutant_fallback))
             record["provenance"]["verbalizer"] = (
-                "llm+fallback(" + ",".join(record_fallback) + ")"
-                if record_fallback else "llm")
+                "llm+fallback(" + "|".join(fallback_parts) + ")"
+                if fallback_parts else "llm")
             _rebuild_transcript(record)
 
     return attempted, passed, fallback_steps
@@ -674,24 +685,46 @@ def _matches_in_span(text, search_span=None):
             if lo <= match.start() and match.end() <= hi]
 
 
-def _operator_span(text, gold_site, search_span=None):
-    """c と abs(b) の最も近い出現対の間を演算子 span とする。"""
-    numbers = gold_site.get("numbers", [])
-    if len(numbers) < 3:
+def _number_token_positions(template):
+    """空白区切りの canonical 式で各数値が属するトークン位置を返す。"""
+    tokens = template.split()
+    positions = []
+    for token_i, token in enumerate(tokens):
+        positions.extend([token_i] * len(NUM_RE.findall(token)))
+    return tokens, positions
+
+
+def _changed_operator_pair(gold_template, mutant_template):
+    """対応する隣接数値間で演算子が最初に異なる数値 index 対を返す。"""
+    gold_tokens, gold_positions = _number_token_positions(gold_template)
+    mutant_tokens, mutant_positions = _number_token_positions(mutant_template)
+    if len(gold_positions) != len(mutant_positions):
         return None
-    c_token, abs_b_token = numbers[1], numbers[2]
+
+    operators = {"+", "-", "×", "*", "/", "="}
+    for number_i in range(len(gold_positions) - 1):
+        gold_between = gold_tokens[
+            gold_positions[number_i] + 1:gold_positions[number_i + 1]]
+        mutant_between = mutant_tokens[
+            mutant_positions[number_i] + 1:mutant_positions[number_i + 1]]
+        gold_ops = [token for token in gold_between if token in operators]
+        mutant_ops = [token for token in mutant_between if token in operators]
+        if gold_ops != mutant_ops:
+            return number_i, number_i + 1
+    return None
+
+
+def _operator_span(text, gold_site, mutant_site, search_span=None):
+    """canonical 式で変化した演算子を逐語化後の式内へ係留する。"""
+    gold_template = gold_site.get("text_template", gold_site.get("text", ""))
+    mutant_template = mutant_site.get(
+        "text_template", mutant_site.get("text", ""))
+    pair = _changed_operator_pair(gold_template, mutant_template)
     matches = _matches_in_span(text, search_span)
-    candidates = []
-    for left in matches:
-        if left.group(0) != c_token:
-            continue
-        for right in matches:
-            if right.group(0) == abs_b_token and left.end() <= right.start():
-                candidates.append((right.start() - left.end(), left.end(),
-                                   right.start()))
-    if not candidates:
+    if pair is None or pair[1] >= len(matches):
         return None
-    _distance, raw_lo, raw_hi = min(candidates)
+    left, right = matches[pair[0]], matches[pair[1]]
+    raw_lo, raw_hi = left.end(), right.start()
     between = text[raw_lo:raw_hi]
     leading = len(between) - len(between.lstrip())
     trailing = len(between) - len(between.rstrip())
@@ -718,11 +751,13 @@ def respan_after_verbalization(record):
         return record
 
     text = mutant_site["text"]
-    expression_span = _template_expression_span(
-        text, mutant_site.get("text_template"))
+    gold_template = gold_site.get("text_template", gold_site.get("text", ""))
+    mutant_template = mutant_site.get(
+        "text_template", mutant_site.get("text", ""))
+    expression_span = _template_expression_span(text, mutant_template)
     span = None
-    if error.get("operator") == "op-transpose-sign":
-        span = _operator_span(text, gold_site, expression_span)
+    if NUM_RE.findall(gold_template) == NUM_RE.findall(mutant_template):
+        span = _operator_span(text, gold_site, mutant_site, expression_span)
     else:
         gold_numbers = Counter(gold_site.get("numbers", []))
         matches = _matches_in_span(text, expression_span)
