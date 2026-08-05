@@ -30,6 +30,20 @@ class TemplateVerbalizer:
         return [s["text"] for s in steps]
 
 
+class FakeVerbalizer:
+    """ネットワークを使わない、G1b 通過確認用の決定論的逐語化器。"""
+
+    name = "fake"
+
+    def verbalize(self, problem, steps):
+        texts = []
+        for step in steps:
+            token = step["numbers"][0] if step.get("numbers") else None
+            prefix = f"つまり {token} を使うと、" if token is not None else "つまり "
+            texts.append(prefix + step["text"])
+        return texts
+
+
 class LLMVerbalizer:
     """vLLM(OpenAI 互換)クライアント。
 
@@ -83,8 +97,9 @@ class LLMVerbalizer:
     @staticmethod
     def _build_prompt(problem, steps):
         lines = [
-            "次の数学の解答ステップを、数値・式を一切変えずに、中学生が書く",
-            "自然な日本語の答案文に言い換えてください。",
+            "次の数学の解答ステップを、中学生が書く自然な日本語の答案文にしてください。",
+            "各ステップには、与えたステップの数式を一字一句そのまま含め、",
+            "その前後に自然な説明を書き添えてください。式の数値・記号を変えないでください。",
             "出力は JSON {\"steps\": [各ステップの文字列]} のみ。",
             f"問題: {problem['problem_text']}",
             "ステップ:",

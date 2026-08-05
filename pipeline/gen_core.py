@@ -9,6 +9,7 @@
 - 点数 GT はルーブリック項目充足集合から計算する(v2.1 の方向に準拠)。
 """
 from fractions import Fraction
+from collections import Counter
 import difflib
 import random
 import re
@@ -347,7 +348,8 @@ def make_record(idx, problem, mut, rng):
                           "normalization": "NFKC+strip-space"},
         "score_gt": {"full": 10, "awarded": awarded},
         "control_flag": {"error_free": mut is None},
-        "provenance": {"pipeline": "phase0-bootstrap-v0.2", "gates_passed": []},
+        "provenance": {"pipeline": "phase0-bootstrap-v0.2", "gates_passed": [],
+                       "verbalizer": "template"},
     }
 
 
@@ -392,8 +394,9 @@ def g1b_check_texts(steps, texts):
     """逐語化照合 v2 の本体(LLM 逐語化の受け入れゲート)。
 
     各文で期待トークン列(numbers)が抽出列の部分列になり、かつ抽出された
-    全トークンが全ステップの既知数値(符号反転を含む)であることを確認する。
-    どちらかを満たさないステップ ID のリストを返す。
+    全トークンが全ステップの既知数値(符号反転を含む)であり、さらに
+    テンプレート式そのものが候補文に含まれることを確認する。
+    いずれかを満たさないステップ ID のリストを返す。
     """
     known = set()
     for s in steps:
@@ -405,12 +408,14 @@ def g1b_check_texts(steps, texts):
     for s, text in zip(steps, texts):
         actual = NUM_RE.findall(text)
         expected = s["numbers"]
+        template = s.get("text_template", s["text"])
         expected_pos = 0
         for token in actual:
             if expected_pos < len(expected) and token == expected[expected_pos]:
                 expected_pos += 1
         if (expected_pos != len(expected)
-                or any(token not in known for token in actual)):
+                or any(token not in known for token in actual)
+                or normalize_text(template) not in normalize_text(text)):
             fails.append(s["step_id"])
     return fails
 
@@ -458,10 +463,233 @@ def _rebuild_mut(err):
             "payload": err.get("_payload", {})}
 
 
+# -------------------------------------------------------------- verbalization
+
+
+def _verbalize_steps(verbalizer, problem, steps, retries):
+    """逐語化して G1b を通ったステップだけを採用する。
+
+    初回にまとめて逐語化し、不合格ステップだけを ``retries`` 回まで
+    再生成する。呼び出し失敗や不正な戻り値も、その回の対象ステップが
+    不合格だったものとして扱う。
+    """
+    templates = [s["text"] for s in steps]
+    texts = list(templates)
+    pending = list(range(len(steps)))
+    passed = set()
+
+    for _attempt in range(max(0, int(retries)) + 1):
+        if not pending:
+            break
+        target_steps = [steps[i] for i in pending]
+        try:
+            candidates = verbalizer.verbalize(problem, target_steps)
+            if (not isinstance(candidates, (list, tuple))
+                    or len(candidates) != len(target_steps)
+                    or any(not isinstance(text, str) or not text
+                           for text in candidates)):
+                raise ValueError("verbalizer returned invalid step texts")
+            failed_ids = set(g1b_check_texts(target_steps, candidates))
+        except Exception:
+            candidates = [None] * len(target_steps)
+            failed_ids = {s["step_id"] for s in target_steps}
+
+        next_pending = []
+        for original_i, candidate, target in zip(
+                pending, candidates, target_steps):
+            if target["step_id"] in failed_ids:
+                next_pending.append(original_i)
+            else:
+                texts[original_i] = candidate
+                passed.add(original_i)
+        pending = next_pending
+
+    fallback_ids = [steps[i]["step_id"] for i in pending]
+    return texts, len(steps), len(passed), fallback_ids
+
+
+def _rebuild_transcript(record):
+    steps = (record["gold_solution"]
+             if record["control_flag"]["error_free"]
+             else record["mutant_solution"])
+    record["transcript_gt"]["text"] = (record["problem"]["text_ja"] + "\n" +
+                                         "\n".join(s["text"] for s in steps))
+
+
+def _ordered_step_ids(record, ids):
+    wanted = set(ids)
+    return [s["step_id"] for s in record["gold_solution"]
+            if s["step_id"] in wanted]
+
+
+def _verbalize_kept_pairs(kept, verbalizer, retries):
+    """G2 通過後のレコードを pair_id 単位で差分逐語化する。"""
+    groups = {}
+    for record, problem in kept:
+        groups.setdefault(record["pair_id"], []).append((record, problem))
+
+    attempted = passed = fallback_steps = 0
+    for pair in groups.values():
+        representative, problem = pair[0]
+        gold_templates = {
+            s["step_id"]: s["text"] for s in representative["gold_solution"]
+        }
+        gold_texts, n_attempted, n_passed, gold_fallback = _verbalize_steps(
+            verbalizer, problem, representative["gold_solution"], retries)
+        attempted += n_attempted
+        passed += n_passed
+        fallback_steps += len(gold_fallback)
+        gold_by_id = {
+            s["step_id"]: text
+            for s, text in zip(representative["gold_solution"], gold_texts)
+        }
+
+        for record, _ in pair:
+            # テンプレート原文は、共有した gold 文を上書きする前に保存する。
+            for gold_step in record["gold_solution"]:
+                gold_step["text_template"] = gold_templates[gold_step["step_id"]]
+                gold_step["text"] = gold_by_id[gold_step["step_id"]]
+
+            record_fallback = list(gold_fallback)
+            if not record["control_flag"]["error_free"]:
+                error = record["injected_errors"][0]
+                affected = set([error["mutation_site"]] +
+                               error["causally_affected_nodes"])
+                target_steps = [s for s in record["mutant_solution"]
+                                if s["step_id"] in affected]
+                mutant_texts, n_attempted, n_passed, mutant_fallback = \
+                    _verbalize_steps(verbalizer, problem, target_steps, retries)
+                attempted += n_attempted
+                passed += n_passed
+                fallback_steps += len(mutant_fallback)
+                mutant_by_id = {s["step_id"]: text
+                                for s, text in zip(target_steps, mutant_texts)}
+
+                # 非変異ステップは文字列そのものを shared gold から継ぎ合わせる。
+                for mutant_step in record["mutant_solution"]:
+                    sid = mutant_step["step_id"]
+                    mutant_step["text_template"] = mutant_step.get(
+                        "text_template", mutant_step["text"])
+                    mutant_step["text"] = (mutant_by_id[sid] if sid in affected
+                                           else gold_by_id[sid])
+                record_fallback.extend(mutant_fallback)
+                respan_after_verbalization(record)
+
+            record_fallback = _ordered_step_ids(record, record_fallback)
+            record["provenance"]["verbalizer"] = (
+                "llm+fallback(" + ",".join(record_fallback) + ")"
+                if record_fallback else "llm")
+            _rebuild_transcript(record)
+
+    return attempted, passed, fallback_steps
+
+
+def _whole_step_span(text):
+    return [0, max(1, len(text))]
+
+
+def _template_expression_span(text, template):
+    """空白の揺れを許して、原文中のテンプレート式の範囲を返す。"""
+    if not template:
+        return None
+    # 複数桁の数値は分割せず、それ以外は記号・変数を一文字ずつ扱う。
+    # これにより ``20`` 自体は保持しつつ、各トークン間の空白を許容する。
+    tokens = re.findall(r"\d+|[^\d\s]", template)
+    if not tokens:
+        return None
+    pattern = r"\s*".join(re.escape(token) for token in tokens)
+    match = re.search(pattern, text)
+    return [match.start(), match.end()] if match else None
+
+
+def _matches_in_span(text, search_span=None):
+    matches = list(NUM_RE.finditer(text))
+    if search_span is None:
+        return matches
+    lo, hi = search_span
+    return [match for match in matches
+            if lo <= match.start() and match.end() <= hi]
+
+
+def _operator_span(text, gold_site, search_span=None):
+    """c と abs(b) の最も近い出現対の間を演算子 span とする。"""
+    numbers = gold_site.get("numbers", [])
+    if len(numbers) < 3:
+        return None
+    c_token, abs_b_token = numbers[1], numbers[2]
+    matches = _matches_in_span(text, search_span)
+    candidates = []
+    for left in matches:
+        if left.group(0) != c_token:
+            continue
+        for right in matches:
+            if right.group(0) == abs_b_token and left.end() <= right.start():
+                candidates.append((right.start() - left.end(), left.end(),
+                                   right.start()))
+    if not candidates:
+        return None
+    _distance, raw_lo, raw_hi = min(candidates)
+    between = text[raw_lo:raw_hi]
+    leading = len(between) - len(between.lstrip())
+    trailing = len(between) - len(between.rstrip())
+    lo, hi = raw_lo + leading, raw_hi - trailing
+    if hi <= lo:
+        # 両端トリムで空になった場合も、安全な 1 文字を確保する。
+        lo = min(raw_lo, max(0, len(text) - 1))
+        hi = min(len(text), lo + 1)
+    return [lo, hi] if 0 <= lo < hi <= len(text) else None
+
+
+def respan_after_verbalization(record):
+    """逐語化後の mutation_site 文に対して誤り span を再計算する。"""
+    if record["control_flag"]["error_free"] or not record["injected_errors"]:
+        return record
+
+    error = record["injected_errors"][0]
+    site = error["mutation_site"]
+    gold_site = next((s for s in record["gold_solution"]
+                      if s["step_id"] == site), None)
+    mutant_site = next((s for s in record["mutant_solution"]
+                        if s["step_id"] == site), None)
+    if gold_site is None or mutant_site is None:
+        return record
+
+    text = mutant_site["text"]
+    expression_span = _template_expression_span(
+        text, mutant_site.get("text_template"))
+    span = None
+    if error.get("operator") == "op-transpose-sign":
+        span = _operator_span(text, gold_site, expression_span)
+    else:
+        gold_numbers = Counter(gold_site.get("numbers", []))
+        matches = _matches_in_span(text, expression_span)
+        # 既知数値の再言及は無視し、gold にない値を最優先で拾う。
+        for match in matches:
+            if gold_numbers[match.group(0)] == 0:
+                span = [match.start(), match.end()]
+                break
+        # 変異値が別の gold 値と同値なら、多重度の超過を次善候補にする。
+        if span is None:
+            remaining = gold_numbers.copy()
+            for match in matches:
+                token = match.group(0)
+                if remaining[token] > 0:
+                    remaining[token] -= 1
+                else:
+                    span = [match.start(), match.end()]
+                    break
+
+    # 式を特定できた場合は、個別箇所を特定できなくても span を式内に保つ。
+    # 式が見つからない場合だけ従来どおり全文を最終フォールバックにする。
+    error["span"] = span or expression_span or _whole_step_span(text)
+    return record
+
+
 # ------------------------------------------------------------------- batch
 
 
-def generate_batch(n_total, seed, control_ratio=0.30):
+def generate_batch(n_total, seed, control_ratio=0.30, verbalizer=None,
+                   verbalize_retries=2):
     """誤りあり/なしを 70/30 で生成。対照はペア生成原則に従い誤りサンプルと
     (問題・スタイル乱数) を共有する。"""
     rng = random.Random(seed)
@@ -512,12 +740,21 @@ def generate_batch(n_total, seed, control_ratio=0.30):
             g2_fail += 1
             fail_reasons.append((rec["sample_id"], reasons))
 
+    verbalize_attempted = verbalize_pass = verbalize_fallback_steps = 0
+    if verbalizer is not None:
+        (verbalize_attempted, verbalize_pass,
+         verbalize_fallback_steps) = _verbalize_kept_pairs(
+             kept, verbalizer, verbalize_retries)
+
     n_ctrl_kept = sum(1 for r, _ in kept if r["control_flag"]["error_free"])
     stats = {
         "n_generated": len(records),
         "g1_pass": g1_pass, "g1_fail": g1_fail,
         "g2_pass": g2_pass, "g2_fail": g2_fail,
         "g2_fail_reasons": fail_reasons[:5],
+        "verbalize_attempted": verbalize_attempted,
+        "verbalize_pass": verbalize_pass,
+        "verbalize_fallback_steps": verbalize_fallback_steps,
         "control_ratio": n_ctrl_kept / max(1, len(kept)),
         "per_operator": _count_ops(kept),
     }
