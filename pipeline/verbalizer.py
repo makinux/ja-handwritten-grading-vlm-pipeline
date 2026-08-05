@@ -31,37 +31,51 @@ class TemplateVerbalizer:
 
 
 class LLMVerbalizer:
-    """vLLM(OpenAI 互換)クライアント。実機未検証のスタブ。
+    """vLLM(OpenAI 互換)クライアント。
 
     プロンプトはプログラムのステップ構造を渡し、数値を一切変えずに
     自然な日本語へ言い換えるよう指示する。出力は g1b_check_texts で検証する。
+    thinking は既定で無効化し、VLLM_ENABLE_THINKING=1 の場合のみサーバ既定に戻す。
+
+    環境変数: VLLM_BASE_URL / VLLM_MODEL / VLLM_MAX_TOKENS /
+    VLLM_ENABLE_THINKING / VLLM_TIMEOUT
     """
 
     name = "llm"
 
-    def __init__(self, base_url=None, model=None, timeout=60):
+    def __init__(self, base_url=None, model=None, timeout=None):
         self.base_url = base_url or os.environ.get("VLLM_BASE_URL")
         self.model = model or os.environ.get("VLLM_MODEL", "Qwen/Qwen3.6-27B")
-        self.timeout = timeout
+        self.max_tokens = int(os.environ.get("VLLM_MAX_TOKENS", "900"))
+        self.timeout = (timeout if timeout is not None
+                        else int(os.environ.get("VLLM_TIMEOUT", "60")))
         if not self.base_url:
             raise RuntimeError(
                 "VLLM_BASE_URL が未設定(GPU サーバ接続後に使用する)")
 
     def verbalize(self, problem, steps):
         prompt = self._build_prompt(problem, steps)
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+            "response_format": {"type": "json_object"},
+            "max_tokens": self.max_tokens,
+        }
+        if os.environ.get("VLLM_ENABLE_THINKING") != "1":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
         req = urllib.request.Request(
             self.base_url.rstrip("/") + "/chat/completions",
-            data=json.dumps({
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
-                "response_format": {"type": "json_object"},
-            }).encode("utf-8"),
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             body = json.loads(r.read().decode("utf-8"))
-        texts = json.loads(
-            body["choices"][0]["message"]["content"])["steps"]
+        content = body["choices"][0]["message"].get("content")
+        if content is None or content == "":
+            raise ValueError(
+                "LLM 応答の content が空(thinking による文脈枯渇の可能性。"
+                "VLLM_MAX_TOKENS/サーバの -c を確認)")
+        texts = json.loads(content)["steps"]
         if len(texts) != len(steps):
             raise ValueError("LLM 逐語化のステップ数が不一致")
         return texts
