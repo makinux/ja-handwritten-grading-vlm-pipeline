@@ -10,7 +10,9 @@
 """
 from fractions import Fraction
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 import difflib
+import os
 import random
 import re
 import unicodedata
@@ -291,6 +293,16 @@ def _propose_llm_mutation(llm_mutator, problem):
     else:
         raise ValueError(f"unsupported LLM mutation domain: {problem['domain']}")
     return _llm_mut_from_proposal(problem, proposal)
+
+
+def _mutation_changes_site(problem, mutation, exec_fn):
+    """G2 で除外される、mutation_site が不変の候補を事前判定する。"""
+    gold_steps, _ = exec_fn(problem["params"], None)
+    mutant_steps, _ = exec_fn(problem["params"], mutation)
+    site = mutation["site"]
+    gold_by_id = {step["step_id"]: step["text"] for step in gold_steps}
+    mutant_by_id = {step["step_id"]: step["text"] for step in mutant_steps}
+    return gold_by_id[site] != mutant_by_id.get(site)
 
 
 # ------------------------------------------------------------------ assembly
@@ -591,71 +603,98 @@ def _ordered_step_ids(record, ids):
             if s["step_id"] in wanted]
 
 
+def _verbalize_pair(pair, verbalizer, retries):
+    """1 ペアを逐語化し、そのペアだけの統計を返す。"""
+    attempted = passed = fallback_steps = 0
+    representative, problem = pair[0]
+    gold_templates = {
+        s["step_id"]: s["text"] for s in representative["gold_solution"]
+    }
+    gold_texts, n_attempted, n_passed, gold_fallback = _verbalize_steps(
+        verbalizer, problem, representative["gold_solution"], retries)
+    attempted += n_attempted
+    passed += n_passed
+    fallback_steps += len(gold_fallback)
+    gold_by_id = {
+        s["step_id"]: text
+        for s, text in zip(representative["gold_solution"], gold_texts)
+    }
+
+    for record, _ in pair:
+        # テンプレート原文は、共有した gold 文を上書きする前に保存する。
+        for gold_step in record["gold_solution"]:
+            gold_step["text_template"] = gold_templates[gold_step["step_id"]]
+            gold_step["text"] = gold_by_id[gold_step["step_id"]]
+
+        mutant_fallback = []
+        if not record["control_flag"]["error_free"]:
+            error = record["injected_errors"][0]
+            affected = set([error["mutation_site"]] +
+                           error["causally_affected_nodes"])
+            target_steps = [s for s in record["mutant_solution"]
+                            if s["step_id"] in affected]
+            mutant_texts, n_attempted, n_passed, mutant_fallback = \
+                _verbalize_steps(verbalizer, problem, target_steps, retries)
+            attempted += n_attempted
+            passed += n_passed
+            fallback_steps += len(mutant_fallback)
+            mutant_by_id = {s["step_id"]: text
+                            for s, text in zip(target_steps, mutant_texts)}
+
+            # 非変異ステップは文字列そのものを shared gold から継ぎ合わせる。
+            for mutant_step in record["mutant_solution"]:
+                sid = mutant_step["step_id"]
+                mutant_step["text_template"] = mutant_step.get(
+                    "text_template", mutant_step["text"])
+                mutant_step["text"] = (mutant_by_id[sid] if sid in affected
+                                       else gold_by_id[sid])
+            respan_after_verbalization(record)
+
+        fallback_parts = []
+        ordered_gold_fallback = _ordered_step_ids(record, gold_fallback)
+        ordered_mutant_fallback = _ordered_step_ids(record, mutant_fallback)
+        if ordered_gold_fallback:
+            fallback_parts.append("gold:" + ",".join(ordered_gold_fallback))
+        if ordered_mutant_fallback:
+            fallback_parts.append("mut:" + ",".join(ordered_mutant_fallback))
+        record["provenance"]["verbalizer"] = (
+            "llm+fallback(" + "|".join(fallback_parts) + ")"
+            if fallback_parts else "llm")
+        _rebuild_transcript(record)
+
+    return attempted, passed, fallback_steps
+
+
 def _verbalize_kept_pairs(kept, verbalizer, retries):
     """G2 通過後のレコードを pair_id 単位で差分逐語化する。"""
     groups = {}
     for record, problem in kept:
         groups.setdefault(record["pair_id"], []).append((record, problem))
 
-    attempted = passed = fallback_steps = 0
-    for pair in groups.values():
-        representative, problem = pair[0]
-        gold_templates = {
-            s["step_id"]: s["text"] for s in representative["gold_solution"]
-        }
-        gold_texts, n_attempted, n_passed, gold_fallback = _verbalize_steps(
-            verbalizer, problem, representative["gold_solution"], retries)
-        attempted += n_attempted
-        passed += n_passed
-        fallback_steps += len(gold_fallback)
-        gold_by_id = {
-            s["step_id"]: text
-            for s, text in zip(representative["gold_solution"], gold_texts)
-        }
+    concurrency = int(os.environ.get("VLLM_CONCURRENCY", "4"))
+    if concurrency < 1:
+        raise ValueError("VLLM_CONCURRENCY must be at least 1")
 
-        for record, _ in pair:
-            # テンプレート原文は、共有した gold 文を上書きする前に保存する。
-            for gold_step in record["gold_solution"]:
-                gold_step["text_template"] = gold_templates[gold_step["step_id"]]
-                gold_step["text"] = gold_by_id[gold_step["step_id"]]
+    pairs = list(groups.values())
+    if concurrency == 1:
+        pair_stats = (
+            _verbalize_pair(pair, verbalizer, retries) for pair in pairs)
+        totals = [0, 0, 0]
+        for stats in pair_stats:
+            for i, value in enumerate(stats):
+                totals[i] += value
+        return tuple(totals)
 
-            mutant_fallback = []
-            if not record["control_flag"]["error_free"]:
-                error = record["injected_errors"][0]
-                affected = set([error["mutation_site"]] +
-                               error["causally_affected_nodes"])
-                target_steps = [s for s in record["mutant_solution"]
-                                if s["step_id"] in affected]
-                mutant_texts, n_attempted, n_passed, mutant_fallback = \
-                    _verbalize_steps(verbalizer, problem, target_steps, retries)
-                attempted += n_attempted
-                passed += n_passed
-                fallback_steps += len(mutant_fallback)
-                mutant_by_id = {s["step_id"]: text
-                                for s, text in zip(target_steps, mutant_texts)}
+    # 各ワーカーは自ペアのレコードだけを書き換え、統計はメインスレッドで合算する。
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        pair_stats = executor.map(
+            lambda pair: _verbalize_pair(pair, verbalizer, retries), pairs)
+        totals = [0, 0, 0]
+        for stats in pair_stats:
+            for i, value in enumerate(stats):
+                totals[i] += value
 
-                # 非変異ステップは文字列そのものを shared gold から継ぎ合わせる。
-                for mutant_step in record["mutant_solution"]:
-                    sid = mutant_step["step_id"]
-                    mutant_step["text_template"] = mutant_step.get(
-                        "text_template", mutant_step["text"])
-                    mutant_step["text"] = (mutant_by_id[sid] if sid in affected
-                                           else gold_by_id[sid])
-                respan_after_verbalization(record)
-
-            fallback_parts = []
-            ordered_gold_fallback = _ordered_step_ids(record, gold_fallback)
-            ordered_mutant_fallback = _ordered_step_ids(record, mutant_fallback)
-            if ordered_gold_fallback:
-                fallback_parts.append("gold:" + ",".join(ordered_gold_fallback))
-            if ordered_mutant_fallback:
-                fallback_parts.append("mut:" + ",".join(ordered_mutant_fallback))
-            record["provenance"]["verbalizer"] = (
-                "llm+fallback(" + "|".join(fallback_parts) + ")"
-                if fallback_parts else "llm")
-            _rebuild_transcript(record)
-
-    return attempted, passed, fallback_steps
+    return tuple(totals)
 
 
 def _whole_step_span(text):
@@ -801,7 +840,7 @@ def generate_batch(n_total, seed, control_ratio=0.30, verbalizer=None,
     llm_mut_attempted = llm_mut_accepted = llm_mut_fallback = 0
     for i in range(n_err):
         domain = rng.choice(list(DOMAINS))
-        gen_fn, _, mut_fn = DOMAINS[domain]
+        gen_fn, exec_fn, mut_fn = DOMAINS[domain]
         problem = gen_fn(rng)
         ok, reasons = g1_gate(problem)
         if not ok:
@@ -809,7 +848,13 @@ def generate_batch(n_total, seed, control_ratio=0.30, verbalizer=None,
             continue
         g1_pass += 1
         # 先に既存オペレータを選び、LLM 不合格時の復帰先を確保する。
-        mut = rng.choice(mut_fn(rng, problem["params"]))
+        mutations = mut_fn(rng, problem["params"])
+        mut = rng.choice(mutations)
+        if not _mutation_changes_site(problem, mut, exec_fn):
+            # 例: 0 を掛けても 0 のままになる除算誤り。乱数を追加消費せず、
+            # 同じ候補集合内の成立する変異へ切り替える。
+            mut = next(candidate for candidate in mutations
+                       if _mutation_changes_site(problem, candidate, exec_fn))
         if llm_mutator is not None and rng.random() < llm_mut_prob:
             llm_mut_attempted += 1
             llm_mut = None
