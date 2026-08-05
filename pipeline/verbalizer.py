@@ -104,6 +104,9 @@ class LLMVerbalizer:
             f"問題: {problem['problem_text']}",
             "ステップ:",
         ]
+        lines.insert(
+            3,
+            "'$' や LaTeX 記法は使わず、ふつうの書き方(例: 3x = 4 + 6)で式を書くこと。")
         for s in steps:
             lines.append(f"- {s['step_id']}: {s['text']}")
         return "\n".join(lines)

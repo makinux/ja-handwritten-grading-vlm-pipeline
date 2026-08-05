@@ -15,6 +15,8 @@ import random
 import re
 import unicodedata
 
+from llm_mutation import safe_parse_expr
+
 NUM_RE = re.compile(r"-?\d+")
 
 CONFIG = {
@@ -101,13 +103,23 @@ def exec_linear(params, mut):
                       f"{tk.n(a)}x {sb} {tk.n(abs(b))} = {tk.n(c)}", tk.nums))
 
     # s2 移項: 正しくは c から b を引く(表示は abs(b) と演算子)
-    op2 = "-" if b > 0 else "+"
-    if m == "op-transpose-sign" and site == "s2":
-        op2 = "+" if op2 == "-" else "-"
-    tk = Tok()
-    steps.append(step("s2", "transpose",
-                      f"{tk.n(a)}x = {tk.n(c)} {op2} {tk.n(abs(b))}", tk.nums))
-    d = c - abs(b) if op2 == "-" else c + abs(b)
+    if m == "op-llm-transpose-misconception" and site == "s2":
+        tk = Tok()
+        a_text = tk.n(a)
+        for token in pay["expr_tokens"]:
+            tk.n(token)
+        steps.append(step("s2", "transpose",
+                          f"{a_text}x = {pay['expr_canonical']}", tk.nums))
+        d = Fraction(pay["d_value"])
+    else:
+        op2 = "-" if b > 0 else "+"
+        if m == "op-transpose-sign" and site == "s2":
+            op2 = "+" if op2 == "-" else "-"
+        tk = Tok()
+        steps.append(step(
+            "s2", "transpose",
+            f"{tk.n(a)}x = {tk.n(c)} {op2} {tk.n(abs(b))}", tk.nums))
+        d = c - abs(b) if op2 == "-" else c + abs(b)
 
     # s3 右辺の計算
     if m == "op-arith-slip" and site == "s3":
@@ -188,6 +200,8 @@ def exec_arith(params, mut):
                           tk.nums))
     else:
         mv = q * r
+        if m == "op-llm-product-misconception" and site == "s2":
+            mv = pay["mv_value"]
         if m == "op-mult-sign-drop" and site == "s2":
             mv = abs(mv)
         if m == "op-arith-slip" and site == "s2":
@@ -228,6 +242,55 @@ def arith_mutations(rng, params):
     if gold < 0:
         muts.append(mut_spec("op-final-sign-drop", "s4", "表記/符号落とし", 1))
     return muts
+
+
+def _llm_mut_from_proposal(problem, proposal):
+    """LLM 提案を検証し、再実行可能な mutation spec へ変換する。"""
+    if not isinstance(proposal, dict):
+        raise ValueError("LLM proposal must be a dictionary")
+    params = problem["params"]
+    if problem["domain"] == "一次方程式":
+        b, c = (params[key] for key in ("b", "c"))
+        value, tokens, canonical = safe_parse_expr(proposal.get("expr"))
+        allowed = {abs(b), abs(c)}
+        if not set(abs(token) for token in tokens) <= allowed:
+            raise ValueError("linear proposal contains a disallowed constant")
+        if value == Fraction(c - b):
+            raise ValueError("linear proposal equals the gold transpose value")
+        return mut_spec(
+            "op-llm-transpose-misconception", "s2", "概念/移項", 3,
+            {"expr_canonical": canonical, "expr_tokens": tokens,
+             "d_value": str(value)})
+
+    if problem["domain"] == "正負の数":
+        q, r = (params[key] for key in ("q", "r"))
+        value = proposal.get("value")
+        if type(value) is not int:
+            raise ValueError("arithmetic proposal value must be an integer")
+        gold = q * r
+        if abs(value) > abs(gold) + 30:
+            raise ValueError("arithmetic proposal value is out of range")
+        if value == gold:
+            raise ValueError("arithmetic proposal equals the gold product")
+        return mut_spec(
+            "op-llm-product-misconception", "s2", "概念/符号・乗算", 3,
+            {"mv_value": value})
+
+    raise ValueError(f"unsupported LLM mutation domain: {problem['domain']}")
+
+
+def _propose_llm_mutation(llm_mutator, problem):
+    """領域別の提案 API を呼び、検証済み mutation spec を返す。"""
+    params = problem["params"]
+    if problem["domain"] == "一次方程式":
+        proposal = llm_mutator.propose_linear_transpose(
+            problem, params["a"], params["b"], params["c"])
+    elif problem["domain"] == "正負の数":
+        proposal = llm_mutator.propose_arith_product(
+            problem, params["q"], params["r"])
+    else:
+        raise ValueError(f"unsupported LLM mutation domain: {problem['domain']}")
+    return _llm_mut_from_proposal(problem, proposal)
 
 
 # ------------------------------------------------------------------ assembly
@@ -689,15 +752,18 @@ def respan_after_verbalization(record):
 
 
 def generate_batch(n_total, seed, control_ratio=0.30, verbalizer=None,
-                   verbalize_retries=2):
+                   verbalize_retries=2, llm_mutator=None, llm_mut_prob=0.25):
     """誤りあり/なしを 70/30 で生成。対照はペア生成原則に従い誤りサンプルと
     (問題・スタイル乱数) を共有する。"""
     rng = random.Random(seed)
+    if not 0 <= llm_mut_prob <= 1:
+        raise ValueError("llm_mut_prob must be between 0 and 1")
     n_err = round(n_total * (1 - control_ratio))
     n_ctrl = n_total - n_err
 
     records, problems = [], []
     g1_pass = g1_fail = 0
+    llm_mut_attempted = llm_mut_accepted = llm_mut_fallback = 0
     for i in range(n_err):
         domain = rng.choice(list(DOMAINS))
         gen_fn, _, mut_fn = DOMAINS[domain]
@@ -707,7 +773,24 @@ def generate_batch(n_total, seed, control_ratio=0.30, verbalizer=None,
             g1_fail += 1
             continue
         g1_pass += 1
+        # 先に既存オペレータを選び、LLM 不合格時の復帰先を確保する。
         mut = rng.choice(mut_fn(rng, problem["params"]))
+        if llm_mutator is not None and rng.random() < llm_mut_prob:
+            llm_mut_attempted += 1
+            llm_mut = None
+            # 初回呼び出しに加えて、最大 2 回リトライする。
+            for _attempt in range(3):
+                try:
+                    llm_mut = _propose_llm_mutation(llm_mutator, problem)
+                    break
+                except Exception:
+                    # API 障害・JSON 不正・検証不合格はいずれもデータにしない。
+                    continue
+            if llm_mut is None:
+                llm_mut_fallback += 1
+            else:
+                mut = llm_mut
+                llm_mut_accepted += 1
         rec = make_record(i, problem, mut, rng)
         rec["injected_errors"][0]["_payload"] = mut["payload"]
         rec["provenance"]["gates_passed"].append("G1")
@@ -752,6 +835,9 @@ def generate_batch(n_total, seed, control_ratio=0.30, verbalizer=None,
         "g1_pass": g1_pass, "g1_fail": g1_fail,
         "g2_pass": g2_pass, "g2_fail": g2_fail,
         "g2_fail_reasons": fail_reasons[:5],
+        "llm_mut_attempted": llm_mut_attempted,
+        "llm_mut_accepted": llm_mut_accepted,
+        "llm_mut_fallback": llm_mut_fallback,
         "verbalize_attempted": verbalize_attempted,
         "verbalize_pass": verbalize_pass,
         "verbalize_fallback_steps": verbalize_fallback_steps,
