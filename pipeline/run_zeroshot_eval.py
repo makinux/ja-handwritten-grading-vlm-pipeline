@@ -30,6 +30,12 @@ OUTPUT_INSTRUCTION = """出力 JSON の形式:
 {"transcript": str, "errors": [{"step_id": str|null, "bbox": [x0,y0,x1,y1], "type": str}], "score": int}"""
 
 
+# Keep this text synchronized with build_sft_dataset.py's
+# RELATIVE_COORDS_INSTRUCTION. Importing that module here would create a
+# circular import because it imports build_prompt from this module.
+RELATIVE_COORDS_INSTRUCTION = 'bbox は 0-1000 の相対座標 [x0,y0,x1,y1] です（ページ左上が原点です）。'
+
+
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--records", required=True,
@@ -39,6 +45,8 @@ def _parse_args(argv=None):
     parser.add_argument("--url", default="http://127.0.0.1:8081/v1",
                         help="OpenAI 互換 API のベース URL")
     parser.add_argument("--model", default="qwen3-vl-8b")
+    parser.add_argument("--coords", choices=("pixel", "relative"),
+                        default="pixel")
     parser.add_argument("--n", type=int, default=200)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--out", required=True)
@@ -114,14 +122,19 @@ def _solution_text(record):
     return "\n".join(lines)
 
 
-def build_prompt(record):
+def build_prompt(record, coords_mode="pixel"):
     """C1 のテキスト入力を構築する。"""
-    return "\n\n".join([
+    prompt = "\n\n".join([
         "問題文:\n" + str(record.get("problem", {}).get("text_ja", "")),
         "模範解答:\n" + _solution_text(record),
         "採点基準:\n" + str(record.get("rubric", {}).get("text_ja", "")),
         OUTPUT_INSTRUCTION,
     ])
+    if coords_mode == "pixel":
+        return prompt
+    if coords_mode == "relative":
+        return prompt + "\n\n" + RELATIVE_COORDS_INSTRUCTION
+    raise ValueError("coords_mode must be 'pixel' or 'relative'")
 
 
 def _image_data_uri(image_path):
@@ -130,14 +143,14 @@ def _image_data_uri(image_path):
     return "data:image/png;base64," + encoded
 
 
-def build_messages(record, image_path):
+def build_messages(record, image_path, coords_mode="pixel"):
     """OpenAI Chat Completions 用のマルチモーダル messages を返す。"""
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
             "role": "user",
             "content": [
-                {"type": "text", "text": build_prompt(record)},
+                {"type": "text", "text": build_prompt(record, coords_mode)},
                 {
                     "type": "image_url",
                     "image_url": {"url": _image_data_uri(image_path)},
@@ -157,7 +170,7 @@ def _endpoint(base_url):
 def _api_request(args, record, image_path):
     payload = {
         "model": args.model,
-        "messages": build_messages(record, image_path),
+        "messages": build_messages(record, image_path, args.coords),
         "response_format": {"type": "json_object"},
         "chat_template_kwargs": {
             "enable_thinking": os.environ.get("VLLM_ENABLE_THINKING") == "1",
@@ -228,7 +241,7 @@ def _parse_json_content(content):
         raise first_error
 
 
-def _sanitize_bbox(value, page_size):
+def _sanitize_bbox(value, page_size, coords_mode="pixel"):
     if not isinstance(value, (list, tuple)) or len(value) != 4:
         return None
     if any(isinstance(v, bool) or not isinstance(v, (int, float))
@@ -237,7 +250,8 @@ def _sanitize_bbox(value, page_size):
     coords = [float(v) for v in value]
     if not all(math.isfinite(v) for v in coords):
         return None
-    width, height = page_size
+    width, height = ((1000.0, 1000.0) if coords_mode == "relative"
+                     else page_size)
     coords[0] = min(width, max(0.0, coords[0]))
     coords[2] = min(width, max(0.0, coords[2]))
     coords[1] = min(height, max(0.0, coords[1]))
@@ -256,7 +270,7 @@ def _as_int(value):
         return None
 
 
-def _sanitize_output(value, record):
+def _sanitize_output(value, record, coords_mode="pixel"):
     if not isinstance(value, dict):
         raise TypeError("output JSON is not an object")
     transcript = value.get("transcript")
@@ -278,7 +292,7 @@ def _sanitize_output(value, record):
             error_type = str(error_type)
         sanitized_errors.append({
             "step_id": step_id,
-            "bbox": _sanitize_bbox(error.get("bbox"), page_size),
+            "bbox": _sanitize_bbox(error.get("bbox"), page_size, coords_mode),
             "type": error_type,
         })
     return {
@@ -299,7 +313,15 @@ def _union_boxes(boxes):
     ]
 
 
-def _gt_error_boxes(record):
+def _relative_bbox(box, width, height):
+    dimensions = (width, height, width, height)
+    return [
+        max(0, min(1000, int(round(value * 1000 / dimension))))
+        for value, dimension in zip(box, dimensions)
+    ]
+
+
+def _gt_error_boxes(record, coords_mode="pixel"):
     spans = record.get("render", {}).get("error_span_boxes_px", [])
     by_ref = {}
     for position, span in enumerate(spans if isinstance(spans, list) else []):
@@ -307,12 +329,19 @@ def _gt_error_boxes(record):
             continue
         reference = span.get("error_ref", position)
         by_ref[reference] = _union_boxes(span.get("boxes", []))
-    return [by_ref.get(index) for index, _error in
-            enumerate(record.get("injected_errors", []))]
+    boxes = [by_ref.get(index) for index, _error in
+             enumerate(record.get("injected_errors", []))]
+    if coords_mode == "pixel":
+        return boxes
+    if coords_mode == "relative":
+        width, height = _page_size(record)
+        return [_relative_bbox(box, width, height) if box is not None else None
+                for box in boxes]
+    raise ValueError("coords_mode must be 'pixel' or 'relative'")
 
 
-def _mock_output(record):
-    boxes = _gt_error_boxes(record)
+def _mock_output(record, coords_mode="pixel"):
+    boxes = _gt_error_boxes(record, coords_mode)
     errors = []
     for index, error in enumerate(record.get("injected_errors", [])):
         errors.append({
@@ -351,7 +380,7 @@ def _is_over_correction(record, transcript):
     return lev(best, gold_site) < lev(best, mut_site)
 
 
-def _individual_metrics(record, output):
+def _individual_metrics(record, output, coords_mode="pixel"):
     has_error = not bool(record.get("control_flag", {}).get("error_free"))
     predictions = output["errors"]
     detected = bool(predictions)
@@ -363,7 +392,7 @@ def _individual_metrics(record, output):
     bbox_iou = None
     bbox_hit = None
     if has_error and detected:
-        gt_boxes = [box for box in _gt_error_boxes(record) if box]
+        gt_boxes = [box for box in _gt_error_boxes(record, coords_mode) if box]
         bbox_iou = max(
             (iou(prediction.get("bbox"), gt_box)
              for prediction in predictions for gt_box in gt_boxes),
@@ -458,6 +487,7 @@ def _format_metric(value):
 
 def _summary_markdown(summary):
     labels = [
+        ("coords", "coords"),
         ("評価成功件数", "n_evaluated"),
         ("parse failures", "parse_failures"),
         ("欠損スキップ", "skipped_missing"),
@@ -510,7 +540,7 @@ def main(argv=None):
 
     print(
         f"[load] chunks={len(paths)} records={len(records)} "
-        f"selected={len(selected)} eligible={len(tasks)} "
+        f"selected={len(selected)} eligible={len(tasks)} coords={args.coords} "
         f"skipped={sum(skip_reasons.values())} malformed={malformed_records}",
         flush=True,
     )
@@ -526,7 +556,7 @@ def main(argv=None):
             failure_reason = None
             try:
                 if args.mock:
-                    value = _mock_output(record)
+                    value = _mock_output(record, args.coords)
                     raw_content = json.dumps(value, ensure_ascii=False)
                     raw_response = raw_content
                 else:
@@ -536,7 +566,7 @@ def main(argv=None):
                         raise RuntimeError(request_error)
                     raw_content = _content_from_response(raw_response)
                     value = _parse_json_content(raw_content)
-                parsed_output = _sanitize_output(value, record)
+                parsed_output = _sanitize_output(value, record, args.coords)
             except (json.JSONDecodeError, KeyError, IndexError, TypeError,
                     RuntimeError, ValueError) as exc:
                 failure_reason = f"{type(exc).__name__}: {exc}"
@@ -550,7 +580,8 @@ def main(argv=None):
                 "parsed_output": parsed_output,
                 "parse_failure": failure_reason is not None,
                 "failure_reason": failure_reason,
-                "metrics": (_individual_metrics(record, parsed_output)
+                "metrics": (_individual_metrics(record, parsed_output,
+                                                  args.coords)
                             if parsed_output is not None else None),
             }
             result_rows.append(row)
@@ -585,6 +616,7 @@ def main(argv=None):
         "seed": args.seed,
         "mock": args.mock,
         "model": args.model,
+        "coords": args.coords,
         "elapsed_seconds": elapsed,
         "records_per_second": (len(result_rows) / elapsed if elapsed else 0.0),
     }
@@ -600,6 +632,7 @@ def main(argv=None):
     print(
         f"[done] attempted={len(result_rows)} evaluated={evaluated} "
         f"parse_failures={parse_failures} skipped={summary['skipped_missing']} "
+        f"coords={args.coords} "
         f"elapsed={elapsed:.2f}s rate={summary['records_per_second']:.2f}/s",
         flush=True,
     )
