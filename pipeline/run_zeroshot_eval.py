@@ -47,6 +47,7 @@ def _parse_args(argv=None):
     parser.add_argument("--model", default="qwen3-vl-8b")
     parser.add_argument("--coords", choices=("pixel", "relative"),
                         default="pixel")
+    parser.add_argument("--system", choices=("on", "off"), default="on")
     parser.add_argument("--n", type=int, default=200)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--out", required=True)
@@ -143,10 +144,9 @@ def _image_data_uri(image_path):
     return "data:image/png;base64," + encoded
 
 
-def build_messages(record, image_path, coords_mode="pixel"):
+def build_messages(record, image_path, coords_mode="pixel", system="on"):
     """OpenAI Chat Completions 用のマルチモーダル messages を返す。"""
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+    messages = [
         {
             "role": "user",
             "content": [
@@ -158,6 +158,9 @@ def build_messages(record, image_path, coords_mode="pixel"):
             ],
         },
     ]
+    if system == "on":
+        messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    return messages
 
 
 def _endpoint(base_url):
@@ -170,7 +173,7 @@ def _endpoint(base_url):
 def _api_request(args, record, image_path):
     payload = {
         "model": args.model,
-        "messages": build_messages(record, image_path, args.coords),
+        "messages": build_messages(record, image_path, args.coords, args.system),
         "response_format": {"type": "json_object"},
         "chat_template_kwargs": {
             "enable_thinking": os.environ.get("VLLM_ENABLE_THINKING") == "1",
@@ -488,6 +491,7 @@ def _format_metric(value):
 def _summary_markdown(summary):
     labels = [
         ("coords", "coords"),
+        ("system", "system"),
         ("評価成功件数", "n_evaluated"),
         ("parse failures", "parse_failures"),
         ("欠損スキップ", "skipped_missing"),
@@ -541,6 +545,7 @@ def main(argv=None):
     print(
         f"[load] chunks={len(paths)} records={len(records)} "
         f"selected={len(selected)} eligible={len(tasks)} coords={args.coords} "
+        f"system={args.system} "
         f"skipped={sum(skip_reasons.values())} malformed={malformed_records}",
         flush=True,
     )
@@ -617,6 +622,7 @@ def main(argv=None):
         "mock": args.mock,
         "model": args.model,
         "coords": args.coords,
+        "system": args.system,
         "elapsed_seconds": elapsed,
         "records_per_second": (len(result_rows) / elapsed if elapsed else 0.0),
     }
@@ -632,7 +638,7 @@ def main(argv=None):
     print(
         f"[done] attempted={len(result_rows)} evaluated={evaluated} "
         f"parse_failures={parse_failures} skipped={summary['skipped_missing']} "
-        f"coords={args.coords} "
+        f"coords={args.coords} system={args.system} "
         f"elapsed={elapsed:.2f}s rate={summary['records_per_second']:.2f}/s",
         flush=True,
     )
