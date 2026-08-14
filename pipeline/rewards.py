@@ -19,6 +19,15 @@ WEIGHTS = {
     "format": 0.10,
 }
 
+SUBTYPE_TO_FAMILY = {
+    "概念/移項": "移項",
+    "記法/移項符号": "移項",
+    "概念/符号・乗算": "符号・乗算",
+    "計算/符号": "符号・乗算",
+}
+FAMILY_TYPES = frozenset(SUBTYPE_TO_FAMILY.values())
+_AUTO_TYPE_REWARD_MODE = object()
+
 
 def lev(a, b):
     """Levenshtein 距離。"""
@@ -68,7 +77,43 @@ def gt_error_box(rec):
     return _union(es[0]["boxes"])
 
 
-def reward_components(rec, out):
+def _type_reward(gt, predicted_types, mode):
+    if mode == "legacy":
+        if gt["type"] in predicted_types:
+            return 1.0, False
+        if any(value.split("/")[0] == gt["type"].split("/")[0]
+               for value in predicted_types if value):
+            return 0.5, False
+        return 0.0, False
+
+    identifiable = gt.get("type_identifiable")
+    if not isinstance(identifiable, str):
+        # 未注釈レコードでは従来ラベルを用い、既存データを壊さない。
+        return _type_reward(gt, predicted_types, "legacy")
+    if gt.get("ambiguous_cross_family") is True:
+        return 0.0, True
+    if identifiable in FAMILY_TYPES:
+        over_claim = any(
+            SUBTYPE_TO_FAMILY.get(value) == identifiable
+            for value in predicted_types
+        )
+        if over_claim:
+            return 0.0, False
+        return (1.0 if identifiable in predicted_types else 0.0), False
+    if identifiable in predicted_types:
+        return 1.0, False
+    family = SUBTYPE_TO_FAMILY.get(identifiable)
+    if family is not None and family in predicted_types:
+        return 0.5, False
+    return 0.0, False
+
+
+def reward_components(rec, out, type_reward_mode=_AUTO_TYPE_REWARD_MODE):
+    automatic_type_mode = type_reward_mode is _AUTO_TYPE_REWARD_MODE
+    if (not automatic_type_mode
+            and type_reward_mode not in ("legacy", "identifiable")):
+        raise ValueError(
+            "type_reward_mode must be 'legacy' or 'identifiable'")
     comps = {k: 0.0 for k in WEIGHTS}
     ok = (isinstance(out, dict) and isinstance(out.get("transcript"), str)
           and isinstance(out.get("errors"), list) and "score" in out)
@@ -116,7 +161,24 @@ def reward_components(rec, out):
         det = 1.0 if not preds else 0.0
     comps["detection"] = max(0.0, det)
 
+    # 引数省略時、注釈済みレコードは既存 adversarial test を変更せず
+    # identifiable モードで検証できるよう自動切替する。未注釈時は legacy。
+    # 明示指定された legacy/identifiable は注釈の有無より優先する。
+    first_error = (rec.get("injected_errors") or [{}])[0]
+    effective_type_mode = type_reward_mode
+    if automatic_type_mode:
+        effective_type_mode = (
+            "identifiable"
+            if isinstance(first_error, dict)
+            and "type_identifiable" in first_error
+            else "legacy"
+        )
+
     # --- 位置・種別(対照群で予測なしなら規約上 1.0)
+    type_excluded = bool(
+        has_err and effective_type_mode == "identifiable"
+        and isinstance(first_error, dict)
+        and first_error.get("ambiguous_cross_family") is True)
     if not has_err:
         loc = typ = 1.0 if not preds else 0.0
     elif not preds:
@@ -129,13 +191,7 @@ def reward_components(rec, out):
         loc = 0.5 * (1.0 if best_iou >= 0.5 else best_iou) + \
             0.5 * (1.0 if step_hit else 0.0)
         types = [p.get("type", "") for p in preds]
-        if gt["type"] in types:
-            typ = 1.0
-        elif any(t.split("/")[0] == gt["type"].split("/")[0]
-                 for t in types if t):
-            typ = 0.5
-        else:
-            typ = 0.0
+        typ, type_excluded = _type_reward(gt, types, effective_type_mode)
     comps["location"], comps["type"] = loc, typ
 
     # --- 点数(完全一致+隣接部分報酬)
@@ -165,5 +221,12 @@ def reward_components(rec, out):
             f *= 0.2
         comps["comment"] = f
 
-    comps["total"] = sum(WEIGHTS[k] * comps[k] for k in WEIGHTS)
+    if type_excluded:
+        active_weight = sum(
+            weight for key, weight in WEIGHTS.items() if key != "type")
+        comps["total"] = sum(
+            WEIGHTS[key] * comps[key] for key in WEIGHTS if key != "type"
+        ) / active_weight
+    else:
+        comps["total"] = sum(WEIGHTS[k] * comps[k] for k in WEIGHTS)
     return comps

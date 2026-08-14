@@ -2,6 +2,7 @@
 """OpenAI 互換 VLM API を用いた C1 ゼロショット評価ランナー。"""
 import argparse
 import base64
+import collections
 import glob
 import json
 import math
@@ -35,6 +36,14 @@ OUTPUT_INSTRUCTION = """出力 JSON の形式:
 # circular import because it imports build_prompt from this module.
 RELATIVE_COORDS_INSTRUCTION = 'bbox は 0-1000 の相対座標 [x0,y0,x1,y1] です（ページ左上が原点です）。'
 
+SUBTYPE_TO_FAMILY = {
+    "概念/移項": "移項",
+    "記法/移項符号": "移項",
+    "概念/符号・乗算": "符号・乗算",
+    "計算/符号": "符号・乗算",
+}
+FAMILY_TYPES = frozenset(SUBTYPE_TO_FAMILY.values())
+
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
@@ -48,6 +57,14 @@ def _parse_args(argv=None):
     parser.add_argument("--coords", choices=("pixel", "relative"),
                         default="pixel")
     parser.add_argument("--system", choices=("on", "off"), default="on")
+    parser.add_argument("--taxonomy", choices=("legacy", "identifiable"),
+                        default="legacy")
+    parser.add_argument(
+        "--relabel-map",
+        help="identifiable taxonomy 用の relabel_identifiable map.jsonl",
+    )
+    parser.add_argument("--postproc", choices=("none", "coarsen"),
+                        default="none")
     parser.add_argument("--n", type=int, default=200)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--out", required=True)
@@ -62,6 +79,10 @@ def _parse_args(argv=None):
         parser.error("--max-tokens は 1 以上で指定してください")
     if args.timeout <= 0:
         parser.error("--timeout は 0 より大きくしてください")
+    if args.taxonomy == "identifiable" and not args.relabel_map:
+        parser.error("--taxonomy identifiable には --relabel-map が必須です")
+    if args.postproc == "coarsen" and args.taxonomy != "identifiable":
+        parser.error("--postproc coarsen は identifiable taxonomy 専用です")
     return args
 
 
@@ -87,6 +108,32 @@ def _read_records(record_dir):
                 except (json.JSONDecodeError, TypeError):
                     malformed += 1
     return paths, records, malformed
+
+
+def _read_relabel_map(path):
+    mappings = {}
+    with open(path, "r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{path}:{line_number}: JSON が不正です") from exc
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"{path}:{line_number}: JSON object ではありません")
+            sample_id = value.get("sample_id")
+            identifiable = value.get("type_identifiable")
+            if (not isinstance(sample_id, str) or not sample_id
+                    or not isinstance(identifiable, str)
+                    or not isinstance(value.get("subtype_retained"), bool)
+                    or not isinstance(
+                        value.get("ambiguous_cross_family"), bool)):
+                raise ValueError(f"{path}:{line_number}: map 行が不正です")
+            if sample_id in mappings:
+                raise ValueError(f"relabel map の sample_id 重複: {sample_id}")
+            mappings[sample_id] = value
+    return mappings
 
 
 def _page_size(record):
@@ -383,7 +430,8 @@ def _is_over_correction(record, transcript):
     return lev(best, gold_site) < lev(best, mut_site)
 
 
-def _individual_metrics(record, output, coords_mode="pixel"):
+def _individual_metrics(record, output, coords_mode="pixel",
+                        taxonomy="legacy", relabel=None, postproc="none"):
     has_error = not bool(record.get("control_flag", {}).get("error_free"))
     predictions = output["errors"]
     detected = bool(predictions)
@@ -403,13 +451,41 @@ def _individual_metrics(record, output, coords_mode="pixel"):
         )
         bbox_hit = bbox_iou >= 0.5
 
-    gt_types = [error.get("type", "")
-                for error in record.get("injected_errors", [])]
-    predicted_types = {prediction.get("type", "")
-                       for prediction in predictions}
-    type_hits = [{"type": error_type,
-                  "exact_match": error_type in predicted_types}
-                 for error_type in gt_types]
+    if taxonomy == "legacy":
+        gt_types = [error.get("type", "")
+                    for error in record.get("injected_errors", [])]
+        predicted_types = {prediction.get("type", "")
+                           for prediction in predictions}
+        type_hits = [{"type": error_type,
+                      "exact_match": error_type in predicted_types}
+                     for error_type in gt_types]
+    else:
+        if has_error and relabel is None:
+            raise ValueError(
+                f"{record.get('sample_id')}: relabel map に項目がありません")
+        type_hits = []
+        if has_error:
+            gt_type = relabel["type_identifiable"]
+            predicted_types = {
+                prediction.get("type", "") for prediction in predictions
+            }
+            if postproc == "coarsen" and gt_type in FAMILY_TYPES:
+                predicted_types = {
+                    SUBTYPE_TO_FAMILY.get(value, value)
+                    for value in predicted_types
+                }
+            over_claim = bool(
+                gt_type in FAMILY_TYPES
+                and any(SUBTYPE_TO_FAMILY.get(value) == gt_type
+                        for value in predicted_types)
+            )
+            type_hits.append({
+                "type": gt_type,
+                "exact_match": gt_type in predicted_types and not over_claim,
+                "excluded_ambiguous": relabel["ambiguous_cross_family"],
+                "over_claim": over_claim,
+                "subtype_retained": relabel["subtype_retained"],
+            })
     return {
         "has_error": has_error,
         "detected_error": detected,
@@ -429,7 +505,7 @@ def _mean(values):
     return sum(values) / len(values) if values else None
 
 
-def _aggregate(result_rows):
+def _aggregate(result_rows, taxonomy="legacy"):
     parsed = [row for row in result_rows if not row["parse_failure"]]
     metrics = [row["metrics"] for row in parsed]
     error_metrics = [value for value in metrics if value["has_error"]]
@@ -443,6 +519,8 @@ def _aggregate(result_rows):
     type_groups = {}
     for value in metrics:
         for hit in value["type_exact_matches"]:
+            if taxonomy == "identifiable" and hit["excluded_ambiguous"]:
+                continue
             type_groups.setdefault(hit["type"], []).append(
                 1.0 if hit["exact_match"] else 0.0)
     type_by_class = {key: _mean(values)
@@ -479,6 +557,36 @@ def _aggregate(result_rows):
         "n_control_records": len(controls),
         "n_location_records": len(located),
     }
+    if taxonomy == "identifiable":
+        all_type_hits = [
+            hit for value in metrics for hit in value["type_exact_matches"]
+        ]
+        included_type_hits = [
+            hit for hit in all_type_hits if not hit["excluded_ambiguous"]
+        ]
+        family_hits = [
+            hit for hit in included_type_hits if hit["type"] in FAMILY_TYPES
+        ]
+        subtype_count = sum(
+            1 for hit in all_type_hits if hit["subtype_retained"])
+        type_n_by_class = {
+            key: len(values) for key, values in sorted(type_groups.items())
+        }
+        all_n_by_class = collections.Counter(
+            hit["type"] for hit in all_type_hits)
+        result.update({
+            "over_claim_rate": _mean([
+                1.0 if hit["over_claim"] else 0.0 for hit in family_hits
+            ]),
+            "ambiguous_cross_family_excluded": (
+                len(all_type_hits) - len(included_type_hits)),
+            "subtype_coverage": (
+                subtype_count / len(all_type_hits) if all_type_hits else None),
+            "subtype_gt_count": subtype_count,
+            "type_metric_n": len(included_type_hits),
+            "type_n_by_class": type_n_by_class,
+            "type_gt_n_by_class": dict(sorted(all_n_by_class.items())),
+        })
     return result
 
 
@@ -492,6 +600,8 @@ def _summary_markdown(summary):
     labels = [
         ("coords", "coords"),
         ("system", "system"),
+        ("taxonomy", "taxonomy"),
+        ("postproc", "postproc"),
         ("評価成功件数", "n_evaluated"),
         ("parse failures", "parse_failures"),
         ("欠損スキップ", "skipped_missing"),
@@ -508,6 +618,16 @@ def _summary_markdown(summary):
         ("経過秒", "elapsed_seconds"),
         ("件/秒", "records_per_second"),
     ]
+    if summary.get("taxonomy") == "identifiable":
+        insert_at = labels.index(
+            ("種別 macro 完全一致", "type_macro_exact_match")) + 1
+        labels[insert_at:insert_at] = [
+            ("過剰主張率", "over_claim_rate"),
+            ("曖昧③の種別除外数",
+             "ambiguous_cross_family_excluded"),
+            ("下位区分 GT 被覆率", "subtype_coverage"),
+            ("種別指標 n", "type_metric_n"),
+        ]
     lines = ["# ゼロショット評価サマリー", "", "| 項目 | 値 |",
              "|---|---:|"]
     lines.extend(f"| {label} | {_format_metric(summary.get(key))} |"
@@ -528,7 +648,13 @@ def main(argv=None):
     started = time.perf_counter()
     os.makedirs(args.out, exist_ok=True)
 
-    paths, records, malformed_records = _read_records(args.records)
+    try:
+        paths, records, malformed_records = _read_records(args.records)
+        relabel_map = (_read_relabel_map(args.relabel_map)
+                       if args.taxonomy == "identifiable" else {})
+    except (OSError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     rng = random.Random(args.seed)
     rng.shuffle(records)
     selected = records[:args.n]
@@ -542,10 +668,25 @@ def main(argv=None):
         else:
             tasks.append((record, image_path))
 
+    if args.taxonomy == "identifiable":
+        missing_map = [
+            record.get("sample_id") for record, _image_path in tasks
+            if record.get("injected_errors")
+            and record.get("sample_id") not in relabel_map
+        ]
+        if missing_map:
+            print(
+                "error: relabel map に評価対象の誤りレコードがありません: "
+                + ", ".join(str(value) for value in missing_map[:5]),
+                file=sys.stderr,
+            )
+            return 1
+
     print(
         f"[load] chunks={len(paths)} records={len(records)} "
         f"selected={len(selected)} eligible={len(tasks)} coords={args.coords} "
-        f"system={args.system} "
+        f"system={args.system} taxonomy={args.taxonomy} "
+        f"postproc={args.postproc} "
         f"skipped={sum(skip_reasons.values())} malformed={malformed_records}",
         flush=True,
     )
@@ -585,9 +726,10 @@ def main(argv=None):
                 "parsed_output": parsed_output,
                 "parse_failure": failure_reason is not None,
                 "failure_reason": failure_reason,
-                "metrics": (_individual_metrics(record, parsed_output,
-                                                  args.coords)
-                            if parsed_output is not None else None),
+                "metrics": (_individual_metrics(
+                    record, parsed_output, args.coords, args.taxonomy,
+                    relabel_map.get(record.get("sample_id")), args.postproc)
+                             if parsed_output is not None else None),
             }
             result_rows.append(row)
             stream.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -623,10 +765,12 @@ def main(argv=None):
         "model": args.model,
         "coords": args.coords,
         "system": args.system,
+        "taxonomy": args.taxonomy,
+        "postproc": args.postproc,
         "elapsed_seconds": elapsed,
         "records_per_second": (len(result_rows) / elapsed if elapsed else 0.0),
     }
-    summary.update(_aggregate(result_rows))
+    summary.update(_aggregate(result_rows, args.taxonomy))
     _atomic_write_text(
         os.path.join(args.out, "eval_summary.json"),
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
@@ -639,6 +783,7 @@ def main(argv=None):
         f"[done] attempted={len(result_rows)} evaluated={evaluated} "
         f"parse_failures={parse_failures} skipped={summary['skipped_missing']} "
         f"coords={args.coords} system={args.system} "
+        f"taxonomy={args.taxonomy} postproc={args.postproc} "
         f"elapsed={elapsed:.2f}s rate={summary['records_per_second']:.2f}/s",
         flush=True,
     )

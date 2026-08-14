@@ -40,6 +40,10 @@ def _parse_args(argv=None):
     parser.add_argument("--val-frac", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument(
+        "--relabel-map",
+        help="指定時は教師 errors[0].type を type_identifiable に置換する",
+    )
+    parser.add_argument(
         "--verify-images", action="store_true",
         help="全参照画像の存在を確認し、欠損があれば失敗する",
     )
@@ -77,6 +81,43 @@ def _load_records(record_dir):
     if malformed:
         raise ValueError(f"JSON として読めないレコードが {malformed} 件あります")
     return paths, records
+
+
+def _load_relabel_map(path):
+    mappings = {}
+    with open(path, "r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, 1):
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"{path}:{line_number}: JSON が不正です") from exc
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"{path}:{line_number}: JSON object ではありません")
+            sample_id = value.get("sample_id")
+            identifiable = value.get("type_identifiable")
+            if (not isinstance(sample_id, str) or not sample_id
+                    or not isinstance(identifiable, str)):
+                raise ValueError(f"{path}:{line_number}: map 行が不正です")
+            if sample_id in mappings:
+                raise ValueError(f"relabel map の sample_id 重複: {sample_id}")
+            mappings[sample_id] = identifiable
+    return mappings
+
+
+def _apply_relabel_map(records, mappings):
+    for record in records:
+        errors = record.get("injected_errors")
+        if not errors:
+            continue
+        sample_id = record.get("sample_id")
+        if sample_id not in mappings:
+            raise ValueError(
+                f"{sample_id}: relabel map に誤りレコードがありません")
+        if not isinstance(errors, list) or not isinstance(errors[0], dict):
+            raise ValueError(f"{sample_id}: injected_errors[0] が不正です")
+        errors[0]["type"] = mappings[sample_id]
 
 
 def _require_nonempty_string(record, key, position):
@@ -476,6 +517,9 @@ def main(argv=None):
     args = _parse_args(argv)
     try:
         paths, records = _load_records(args.records)
+        if args.relabel_map:
+            _apply_relabel_map(
+                records, _load_relabel_map(args.relabel_map))
         _validate_records(records)
 
         if args.verify_images:
