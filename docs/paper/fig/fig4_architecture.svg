@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" font-family="'Noto Sans JP','Hiragino Sans',sans-serif" font-size="12">
+  <defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#333"/></marker></defs>
+  <style>.b{fill:#fff;stroke:#333;stroke-width:1.3}.m{fill:#eef4ff;stroke:#335;stroke-width:1.3}.g{fill:#f4f4f4;stroke:#777;stroke-width:1}.t{fill:#111;font-weight:bold}.s{font-size:10.5px;fill:#444}.mono{font-family:Consolas,monospace;font-size:10.5px;fill:#333}.a{stroke:#333;stroke-width:1.3;marker-end:url(#a3);fill:none}</style>
+
+  <text class="s" x="10" y="20">図 4: モジュール構成(実装ファイル名つき)。左列=データ生成、右列=学習・評価。角丸=LLM を用いる箇所。</text>
+
+  <rect class="b" x="20" y="40" width="270" height="66"/>
+  <text class="t" x="30" y="60">M1 問題・解法生成</text>
+  <text class="mono" x="30" y="78">gen_core.py(正負の数/一次方程式)</text>
+  <text class="s" x="30" y="94">solution_program: 実行可能ステップ列+G1a 実行検証</text>
+
+  <rect class="m" x="20" y="130" width="270" height="82" rx="10"/>
+  <text class="t" x="30" y="150">M2 誤り注入</text>
+  <text class="mono" x="30" y="168">llm_mutation.py + gen_core.py</text>
+  <text class="s" x="30" y="184">機械オペレータ/LLM 概念提案→AST ホワイトリスト検証</text>
+  <text class="s" x="30" y="200">G2: 変異再実行・差分封じ込め・対照 30% 混入</text>
+
+  <rect class="m" x="20" y="236" width="270" height="82" rx="10"/>
+  <text class="t" x="30" y="256">逐語化(合成方式)</text>
+  <text class="mono" x="30" y="274">verbalizer.py</text>
+  <text class="s" x="30" y="290">LLM=説明句のみ → _compose_step_text で式を機械合成</text>
+  <text class="s" x="30" y="306">G1b: 部分列・既知数値・式包含(構成的 100%)</text>
+
+  <rect class="b" x="20" y="342" width="270" height="66"/>
+  <text class="t" x="30" y="362">M3 レンダリング</text>
+  <text class="mono" x="30" y="380">run_render.py</text>
+  <text class="s" x="30" y="396">文字単位座標 GT → error_span_boxes_px・対照ペア画像</text>
+
+  <rect class="b" x="20" y="432" width="270" height="66"/>
+  <text class="t" x="30" y="452">識別可能粒度 再ラベル</text>
+  <text class="mono" x="30" y="470">relabel_identifiable.py</text>
+  <text class="s" x="30" y="486">観測同値スキャン(ρ)→識別可能な最細ラベル+層0検査</text>
+
+  <line class="a" x1="155" y1="106" x2="155" y2="128"/>
+  <line class="a" x1="155" y1="212" x2="155" y2="234"/>
+  <line class="a" x1="155" y1="318" x2="155" y2="340"/>
+  <line class="a" x1="155" y1="408" x2="155" y2="430"/>
+
+  <rect class="b" x="400" y="40" width="250" height="66"/>
+  <text class="t" x="410" y="60">SFT データ構築</text>
+  <text class="mono" x="410" y="78">build_sft_dataset.py --relabel-map</text>
+  <text class="s" x="410" y="94">C1 契約 messages・相対座標 0-1000・pair 単位分割</text>
+
+  <rect class="b" x="400" y="130" width="250" height="66"/>
+  <text class="t" x="410" y="150">QLoRA 訓練(2B)</text>
+  <text class="mono" x="410" y="168">train/train_qlora.py</text>
+  <text class="s" x="410" y="184">4bit NF4+fp16/SDPA・言語層のみ・前後評価内蔵</text>
+
+  <rect class="b" x="400" y="220" width="250" height="66"/>
+  <text class="t" x="410" y="240">配備</text>
+  <text class="mono" x="410" y="258">merge → GGUF → llama.cpp(8bit)</text>
+  <text class="s" x="410" y="274">system プロンプトなし=訓練分布と一致(実測で確定)</text>
+
+  <rect class="b" x="400" y="310" width="250" height="82"/>
+  <text class="t" x="410" y="330">評価ハーネス</text>
+  <text class="mono" x="410" y="348">run_zeroshot_eval.py</text>
+  <text class="s" x="410" y="364">--taxonomy identifiable: 過剰主張率・被覆率・曖昧除外</text>
+  <text class="s" x="410" y="380">固定層化セット eval400(fresh 生成 507 件)</text>
+
+  <rect class="b" x="400" y="416" width="250" height="66"/>
+  <text class="t" x="410" y="436">報酬(RL 用・三値)</text>
+  <text class="mono" x="410" y="454">rewards.py + adversarial_reward_test.py</text>
+  <text class="s" x="410" y="470">一致=満点/粗すぎ=部分/過剰主張=0・敵対的テスト</text>
+
+  <line class="a" x1="290" y1="465" x2="398" y2="80" stroke-dasharray="5 3"/>
+  <line class="a" x1="525" y1="106" x2="525" y2="128"/>
+  <line class="a" x1="525" y1="196" x2="525" y2="218"/>
+  <line class="a" x1="525" y1="286" x2="525" y2="308"/>
+  <line class="a" x1="525" y1="392" x2="525" y2="414"/>
+
+  <rect class="g" x="710" y="130" width="230" height="150"/>
+  <text class="t" x="720" y="150">品質保証(訓練前)</text>
+  <text class="s" x="720" y="170">・報酬敵対的テスト 逆転 0/1000</text>
+  <text class="s" x="720" y="188">・text-only リークプローブ</text>
+  <text class="s" x="720" y="206">・G1 実効性実測(実 LLM 出力)</text>
+  <text class="s" x="720" y="224">・KPI 整合モンテカルロ</text>
+  <text class="s" x="720" y="242">・層 0: 識別不能標本への</text>
+  <text class="s" x="732" y="258">  下位区分 GT=0 件検査</text>
+
+  <rect class="g" x="710" y="310" width="230" height="118"/>
+  <text class="t" x="720" y="330">3 層ゲート(評価)</text>
+  <text class="s" x="720" y="350">層0 データ健全性 = 1.0 必須</text>
+  <text class="s" x="720" y="368">層1 参照(HF・n=400 測定後に閾値)</text>
+  <text class="s" x="720" y="386">層2 配備(ランタイム差 ≤0.05</text>
+  <text class="s" x="732" y="402">  +回帰ガード Wilson 下限)</text>
+</svg>
