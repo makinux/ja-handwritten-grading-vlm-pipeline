@@ -20,7 +20,7 @@
 
 ## 2 関連研究
 
-**合成文書データ**:文書理解・OCR 分野では合成レンダリングによる事前学習データ生成が広く用いられる(SynthDoG/Donut 系、SynthText 系)。これらは転記(読み)の教師信号を合成するのに対し、本研究は誤りの位置・種別・採点という**反実仮想的な細粒度ラベル**を構成により生成する点が異なる。**数学誤り診断**:数学答案の誤り分類はテキストベースの誤りタイプ推定や、選択式・最終解ベースの診断が中心であり、手書き途中式に対する座標付き誤り診断のデータセットは我々の知る限り存在しない。**LLM/VLM による採点**:LLM 採点(essay scoring・short answer grading)では基準適合と過剰確信が課題とされる。本研究の過剰主張ペナルティは、選択的予測(selective prediction)・棄権付き分類(classification with abstention)の考え方を、**ラベル空間の粒度側**に適用したものと位置づけられる。**合成データのラベル品質**:合成データ研究ではラベルノイズ・分布シフトが論じられるが、「構成的に正しいラベルが観測から識別不能」という失敗モード——本質的にはラベルが観測の関数ではなく生成過程の関数になっている状態——を実測・修正した報告は見当たらない。(投稿版では各文献を確認のうえ具体的に引用する。)
+**合成文書データ**:文書理解・OCR 分野では合成レンダリングによる事前学習データ生成が広く用いられる(SynthText [Gupta+ 2016]、Donut の SynthDoG [Kim+ 2022])。これらは転記(読み)の教師信号を合成するのに対し、本研究は誤りの位置・種別・採点という**反実仮想的な細粒度ラベル**を構成により生成する点が異なる。**数学誤り診断**:解答過程の誤りステップ特定はテキスト推論では ProcessBench [Zheng+ 2025]、生徒解答の検証・修正では Daheim+ [2024] があり、手書き数学の VLM 評価では FERMAT [Nath+ 2025](誤り検出・局在化・訂正)や CHECK-MAT [Khrulev 2025] が登場しているが、いずれも**訓練用の座標付き細粒度ラベルの供給**は扱わない。日本語の手書きを含むシーンテキスト理解では JaWildText [Maeda+ 2026] がある。**LLM/VLM による採点**:LLM 採点は essay scoring [Mizumoto+ 2023]・short answer grading [Ferreira Mello+ 2025] で活発だが、基準適合と過剰確信が課題とされる。本研究の過剰主張ペナルティは、選択的予測・棄権付き分類 [Chow 1970; Geifman+ 2017] の考え方を、確信度ではなく**ラベル空間の粒度側**に適用したものと位置づけられる。**合成データの品質**:合成データの factuality・忠実性の課題は整理されている [Liu+ 2024] が、「構成的に正しいラベルが観測から識別不能」という失敗モード——ラベルが観測の関数ではなく生成過程の関数になっている状態——を実測・修正した報告は我々の知る限り存在しない。
 
 ## 3 合成パイプライン
 
@@ -76,6 +76,21 @@
 細粒度・反実仮想ラベル付き答案データを構成により合成し、2B の小型 VLM で誤り位置・種別・採点能力を確立した。あわせて、合成データのラベルが「構成的に正しいが観測から識別不能」でありうるという失敗モードを実測し、識別可能粒度への再ラベルと過剰主張ペナルティという一般性のある処方を示した。コードは公開予定である。
 
 ---
+
+## 参考文献(検証済み書誌・2026-08-14)
+
+- Chow, C. K. (1970). On Optimum Recognition Error and Reject Tradeoff. IEEE Trans. Information Theory 16(1):41–46.
+- Geifman, Y., El-Yaniv, R. (2017). Selective Classification for Deep Neural Networks. NeurIPS 2017. arXiv:1705.08500
+- Gupta, A., Vedaldi, A., Zisserman, A. (2016). Synthetic Data for Text Localisation in Natural Images. CVPR 2016. arXiv:1604.06646
+- Kim, G. et al. (2022). OCR-free Document Understanding Transformer. ECCV 2022. arXiv:2111.15664(SynthDoG は本論文内で提案)
+- Zheng, C. et al. (2025). ProcessBench: Identifying Process Errors in Mathematical Reasoning. ACL 2025. arXiv:2412.06559
+- Daheim, N. et al. (2024). Stepwise Verification and Remediation of Student Reasoning Errors with Large Language Model Tutors. EMNLP 2024. arXiv:2407.09136
+- Nath, O. et al. (2025). Can Vision-Language Models Evaluate Handwritten Math? ACL 2025 (2025.acl-long.720). arXiv:2501.07244(FERMAT)
+- Khrulev, R. (2025). CHECK-MAT: Checking Hand-Written Mathematical Answers for the Russian Unified State Exam. arXiv:2507.22958
+- Maeda, K., Okazaki, N. (2026). JaWildText: A Benchmark for Vision-Language Models on Japanese Scene Text Understanding. arXiv:2603.27942
+- Mizumoto, A., Eguchi, M. (2023). Exploring the Potential of Using an AI Language Model for Automated Essay Scoring. Research Methods in Applied Linguistics 2(2).
+- Ferreira Mello, R. et al. (2025). Automatic Short Answer Grading in the LLM Era. LAK 2025.
+- Liu, R. et al. (2024). Best Practices and Lessons Learned on Synthetic Data. COLM 2024. arXiv:2404.07503
 
 ### 図表計画(投稿版)
 
