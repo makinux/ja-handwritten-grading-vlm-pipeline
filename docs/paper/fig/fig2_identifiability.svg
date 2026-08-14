@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 330" font-family="'Noto Sans JP','Hiragino Sans',sans-serif" font-size="13">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#333"/></marker>
+  </defs>
+  <style>.b{fill:#fff;stroke:#333;stroke-width:1.4}.t{fill:#111}.s{font-size:11px;fill:#444}.a{stroke:#333;stroke-width:1.4;marker-end:url(#ar2);fill:none}.mono{font-family:Consolas,monospace}.bad{fill:#b00020}.ok{fill:#00600f}</style>
+
+  <text class="s" x="10" y="24">図 2: 観測同値とラベル識別可能性。異なる生成経路(provenance)が同一の答案表面を生む。</text>
+
+  <rect class="b" x="30" y="50" width="240" height="70" rx="6"/>
+  <text class="t" x="150" y="74" text-anchor="middle">LLM 概念オペレータ</text>
+  <text class="s" x="150" y="92" text-anchor="middle">誤解「移項しても符号は変わらない」</text>
+  <text class="s" x="150" y="108" text-anchor="middle">GT: 概念/移項(深刻度 3)</text>
+
+  <rect class="b" x="30" y="150" width="240" height="70" rx="6"/>
+  <text class="t" x="150" y="174" text-anchor="middle">機械オペレータ</text>
+  <text class="s" x="150" y="192" text-anchor="middle">符号の書き誤り(うっかり)</text>
+  <text class="s" x="150" y="208" text-anchor="middle">GT: 記法/移項符号(深刻度 2)</text>
+
+  <rect class="b" x="360" y="100" width="230" height="70" rx="6"/>
+  <text class="t mono" x="475" y="130" text-anchor="middle">2x − 6 = 17</text>
+  <text class="t mono" x="475" y="152" text-anchor="middle">2x = 17 − 6</text>
+
+  <line class="a" x1="270" y1="85" x2="358" y2="120"/>
+  <line class="a" x1="270" y1="185" x2="358" y2="150"/>
+
+  <text class="s" x="475" y="192" text-anchor="middle">観測同値率 ρ = 731/765 = 0.956(実測・全件走査)</text>
+  <text class="s" x="475" y="209" text-anchor="middle">誤解を語る説明句 0/765 → 表面からの判別信号なし</text>
+
+  <rect class="b" x="660" y="50" width="270" height="230" rx="6"/>
+  <text class="t" x="795" y="76" text-anchor="middle">識別可能粒度ラベル(修正)</text>
+  <text class="s" x="675" y="102">・観測同値な事例(95.6%)</text>
+  <text class="s" x="695" y="119">→ GT = ファミリ「移項」</text>
+  <text class="s" x="675" y="143">・識別可能な少数例(4.4%)のみ</text>
+  <text class="s" x="695" y="160">→ 下位区分を保持(被覆率併記)</text>
+  <text class="s" x="675" y="184">・評価/報酬(三値):</text>
+  <text class="s ok" x="695" y="201">完全一致=正解・粗すぎ=部分点</text>
+  <text class="s bad" x="695" y="218">識別不能なのに下位区分=過剰主張 0 点</text>
+  <text class="s" x="675" y="245">効果: 種別 0.760→0.964(held-out)</text>
+  <text class="s" x="675" y="262">過剰主張 90%→1%(未見問題群)</text>
+
+  <line class="a" x1="592" y1="135" x2="658" y2="135"/>
+
+  <text class="s" x="30" y="310">provenance(operator ID・深刻度)は監査用に保持するが予測ターゲットにしない。実測 0.760 はタイブレーク条件付き上限 0.759 と 3 桁一致。</text>
+</svg>
