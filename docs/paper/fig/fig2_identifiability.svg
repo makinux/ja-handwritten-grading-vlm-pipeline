@@ -2,23 +2,24 @@
   <defs>
     <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#333"/></marker>
   </defs>
-  <style>.b{fill:#fff;stroke:#333;stroke-width:1.4}.t{fill:#111}.s{font-size:11px;fill:#444}.a{stroke:#333;stroke-width:1.4;marker-end:url(#ar2);fill:none}.mono{font-family:Consolas,monospace}.bad{fill:#b00020}.ok{fill:#00600f}</style>
+  <style>.b{fill:#fff;stroke:#333;stroke-width:1.4}.t{fill:#111}.s{font-size:12.5px;fill:#444}.a{stroke:#333;stroke-width:1.4;marker-end:url(#ar2);fill:none}.mono{font-family:Consolas,monospace}.bad{fill:#b00020}.ok{fill:#00600f}</style>
 
   <text class="s" x="10" y="24">図 2: 観測同値とラベル識別可能性。異なる生成経路(provenance)が同一の答案表面を生む。</text>
 
   <rect class="b" x="30" y="50" width="240" height="70" rx="6"/>
   <text class="t" x="150" y="74" text-anchor="middle">LLM 概念オペレータ</text>
   <text class="s" x="150" y="92" text-anchor="middle">誤解「移項しても符号は変わらない」</text>
-  <text class="s" x="150" y="108" text-anchor="middle">GT: 概念/移項(深刻度 3)</text>
+  <text class="s" x="150" y="108" text-anchor="middle">旧GT(provenance): 概念/移項</text>
 
   <rect class="b" x="30" y="150" width="240" height="70" rx="6"/>
   <text class="t" x="150" y="174" text-anchor="middle">機械オペレータ</text>
   <text class="s" x="150" y="192" text-anchor="middle">符号の書き誤り(うっかり)</text>
-  <text class="s" x="150" y="208" text-anchor="middle">GT: 記法/移項符号(深刻度 2)</text>
+  <text class="s" x="150" y="208" text-anchor="middle">旧GT(provenance): 記法/移項符号</text>
 
   <rect class="b" x="360" y="100" width="230" height="70" rx="6"/>
-  <text class="t mono" x="475" y="130" text-anchor="middle">2x − 6 = 17</text>
-  <text class="t mono" x="475" y="152" text-anchor="middle">2x = 17 − 6</text>
+  <text class="t mono" x="475" y="130" text-anchor="middle">4x − 5 = −10</text>
+  <text class="t mono" x="475" y="152" text-anchor="middle">4x = −10 − 5</text>
+  <text class="s" x="475" y="88" text-anchor="middle">(正解の移項は 4x = −10 + 5)</text>
 
   <line class="a" x1="270" y1="85" x2="358" y2="120"/>
   <line class="a" x1="270" y1="185" x2="358" y2="150"/>
@@ -35,10 +36,10 @@
   <text class="s" x="675" y="184">・評価/報酬(三値):</text>
   <text class="s ok" x="695" y="201">完全一致=正解・粗すぎ=部分点</text>
   <text class="s bad" x="695" y="218">識別不能なのに下位区分=過剰主張 0 点</text>
-  <text class="s" x="675" y="245">効果: 種別 0.760→0.964(held-out)</text>
-  <text class="s" x="675" y="262">過剰主張 90%→1%(未見問題群)</text>
+  <text class="s" x="675" y="245">効果: 推論時写像のみで種別 0.970</text>
+  <text class="s" x="675" y="262">過剰主張 0%(再訓練不要)</text>
 
   <line class="a" x1="592" y1="135" x2="658" y2="135"/>
 
-  <text class="s" x="30" y="310">provenance(operator ID・深刻度)は監査用に保持するが予測ターゲットにしない。実測 0.760 はタイブレーク条件付き上限 0.759 と 3 桁一致。</text>
+  <text class="s" x="30" y="310">provenance(operator ID・深刻度)は監査用に保持するが予測ターゲットにしない。実測 0.7595 は多数側タイブレークの条件付き期待値 0.7593 とほぼ一致(差 0.0002、整合性検査)。</text>
 </svg>
