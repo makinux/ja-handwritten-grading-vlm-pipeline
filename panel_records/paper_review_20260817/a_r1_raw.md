@@ -19615,9 +19615,9 @@ e0a9a87 äºˆç¨¿: 3ã‚·ãƒ¼ãƒ‰åˆ†æ•£ã‚’é™ç•Œ�
  docs/paper/nlp_annual_draft.md | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 commit e0a9a87d1609bb9d05cfd7c1731ae69f6058a7ba
-Author:     nss_wayama <wayama@nssv.co.jp>
+Author:     nss_wayama <(メール非公開)>
 AuthorDate: Mon Aug 17 08:38:58 2026 +0900
-Commit:     nss_wayama <wayama@nssv.co.jp>
+Commit:     nss_wayama <(メール非公開)>
 CommitDate: Mon Aug 17 08:38:58 2026 +0900
 
     äºˆç¨¿: 3ã‚·ãƒ¼ãƒ‰åˆ†æ•£ã‚’é™ç•Œç¯€ã«åæ˜ (ç¨®åˆ¥0.976Â±0.010ãƒ»IoU 0.950Â±0.016ãƒ»æ¤œå‡º/æŽ¡ç‚¹ã¯åˆ†æ•£ã‚¼ãƒ­ã€æœ¬æ–‡å€¤0.964ã¯æœ€å°å€¤=ä¿å®ˆçš„)
