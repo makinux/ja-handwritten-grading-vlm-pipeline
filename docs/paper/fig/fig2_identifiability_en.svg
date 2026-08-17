@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 330" font-family="Helvetica,Arial,sans-serif" font-size="13">
+  <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#333"/></marker></defs>
+  <style>.b{fill:#fff;stroke:#333;stroke-width:1.4}.t{fill:#111}.s{font-size:12px;fill:#444}.a{stroke:#333;stroke-width:1.4;marker-end:url(#ar2);fill:none}.mono{font-family:Consolas,monospace}.bad{fill:#b00020}.ok{fill:#00600f}</style>
+
+  <rect class="b" x="30" y="50" width="250" height="70" rx="6"/>
+  <text class="t" x="155" y="74" text-anchor="middle">LLM concept operator</text>
+  <text class="s" x="155" y="92" text-anchor="middle">misconception: "moving a term</text>
+  <text class="s" x="155" y="108" text-anchor="middle">keeps its sign" (provenance A)</text>
+
+  <rect class="b" x="30" y="150" width="250" height="70" rx="6"/>
+  <text class="t" x="155" y="174" text-anchor="middle">Mechanical operator</text>
+  <text class="s" x="155" y="192" text-anchor="middle">careless sign slip</text>
+  <text class="s" x="155" y="208" text-anchor="middle">(provenance B)</text>
+
+  <rect class="b" x="360" y="100" width="230" height="70" rx="6"/>
+  <text class="s" x="475" y="88" text-anchor="middle">(correct transposition: 4x = −10 + 5)</text>
+  <text class="t mono" x="475" y="130" text-anchor="middle">4x − 5 = −10</text>
+  <text class="t mono" x="475" y="152" text-anchor="middle">4x = −10 − 5</text>
+
+  <line class="a" x1="280" y1="85" x2="358" y2="120"/>
+  <line class="a" x1="280" y1="185" x2="358" y2="150"/>
+
+  <text class="s" x="475" y="192" text-anchor="middle">observational equivalence: ρ = 731/765 = 0.956 (exhaustive scan)</text>
+  <text class="s" x="475" y="209" text-anchor="middle">misconception-verbalizing clauses: 0/765 → no surface signal</text>
+
+  <rect class="b" x="660" y="50" width="270" height="230" rx="6"/>
+  <text class="t" x="795" y="76" text-anchor="middle">Identifiable-granularity labels</text>
+  <text class="s" x="675" y="102">• equivalent cases (95.6%)</text>
+  <text class="s" x="695" y="119">→ GT = family "transposition"</text>
+  <text class="s" x="675" y="143">• identifiable minority (4.4%)</text>
+  <text class="s" x="695" y="160">→ keep subtype (report coverage)</text>
+  <text class="s" x="675" y="184">• three-valued eval/reward:</text>
+  <text class="s ok" x="695" y="201">exact = correct; too coarse = partial</text>
+  <text class="s bad" x="695" y="218">subtype on unidentifiable = 0 (over-claim)</text>
+  <text class="s" x="675" y="245">Effect: mapping alone gives 0.970;</text>
+  <text class="s" x="675" y="262">over-claiming 0% (no retraining)</text>
+
+  <line class="a" x1="592" y1="135" x2="658" y2="135"/>
+
+  <text class="s" x="30" y="310">Provenance (operator ID, severity) is kept for auditing, never as the prediction target. Measured 0.7595 vs. conditional expectation 0.7593 (diff 0.0002).</text>
+</svg>
