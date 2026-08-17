@@ -49,10 +49,10 @@
 
 \textbf{規模}:10,000 件(誤り 7,000/対照 3,000)を約 7 時間で生成し全件レンダリングに成功(生成 LLM は Qwen3.6-35B-A3B 4bit,ミニ PC 1 台).
 
-\begin{figure}[t]\centering
-\includegraphics[width=\columnwidth]{fig/fig1_pipeline}
+\begin{figure*}[t]\centering
+\includegraphics[width=\textwidth]{fig/fig1_pipeline}
 \caption{label-by-construction 合成パイプライン.ラベルは注釈ではなく構成から導かれる.}\label{fig:pipeline}
-\end{figure}
+\end{figure*}
 
 \section{実験 1:ゼロショットから SFT へ}\label{sec:exp1}
 \textbf{指標}:誤り位置 IoU@0.5 = GT 誤りごとに予測 bbox との IoU $\ge 0.5$ を正解とする比率.種別一致(マクロ)= クラス別正解率のクラス平均.幻覚誤り率 = 対照答案のうち誤りを 1 件以上報告した比率.点数完全一致 = 合計点一致率.過剰主張率 = 識別不能(ファミリ粒度 GT)の誤りのうち下位区分を断定した比率(\S\ref{sec:exp2}).
@@ -76,6 +76,11 @@
 
 \section{実験 2:ラベル識別可能性}\label{sec:exp2}
 \textbf{発見}:種別一致は目標 0.85 に未達で,混同は下位区分ペア内に集中し,混同方向は実行環境間で反転した.\textbf{観測同値率 $\rho$} を「あるオペレータの出力のうち他のオペレータの出力と答案表面が一致する割合」と定義し全件走査したところ,(i) 概念的誤解オペレータの $\rho=731/765=0.956$(図~\ref{fig:ident}),(ii) 誤解を語る説明句は 0/765,(iii) 積の誤解ペアは共存領域(q$\cdot$r$<$0)の 84.2\% が観測同値で,残る領域は競合オペレータが構造的に出現しない偽の識別可能領域だった.下位区分ラベルは答案の観測可能な性質ではなく\textbf{生成経路の記録}であり,これを予測ターゲットにしたことが失敗の本質である.整合性検査として,多数側タイブレークを仮定した条件付き期待値 0.7593 は実測 0.7595 とほぼ一致した(差 0.0002).この分析は LLM 概念オペレータの負の結果でもある:変異が観測に差分を落とさなければ,意味的多様性は学習可能な信号にならない.
+
+\begin{figure*}[t]\centering
+\includegraphics[width=\textwidth]{fig/fig2_identifiability}
+\caption{観測同値とラベル識別可能性(走る例で統一).}\label{fig:ident}
+\end{figure*}
 
 \textbf{修正}:種別 GT を「観測から識別可能な最も細かいラベル」に写像する(観測同値な事例はファミリ,識別可能な少数事例——全誤りの 1.5\%——のみ下位区分).評価・報酬は三値:完全一致=正解/粗すぎ=部分点/\textbf{識別不能なのに下位区分=過剰主張として不正解}.写像は決定論的述語計算のみで再生成を要しない.
 
@@ -132,13 +137,9 @@
 \section{生成例}
 図~\ref{fig:example} に実生成例(問題「$4x-5=-10$」,概念/移項を s2 に注入,点数 GT 3/10)を示す.注入は「$+5$」$\rightarrow$「$-5$」の 1 文字で,機械オペレータも同一表面を生む=観測同値の実例である.
 
-\begin{figure}[t]\centering
-\includegraphics[width=\columnwidth]{fig/fig2_identifiability}
-\caption{観測同値とラベル識別可能性(走る例で統一).}\label{fig:ident}
-\end{figure}
-\begin{figure}[t]\centering
-\includegraphics[width=\columnwidth]{fig/fig3_example_pair}
+\begin{figure*}[t]\centering
+\includegraphics[width=\textwidth]{fig/fig3_example_pair}
 \caption{実生成例.(a) 誤り版(赤枠=bbox GT),(b) 対照ペア.}\label{fig:example}
-\end{figure}
+\end{figure*}
 
 \end{document}
