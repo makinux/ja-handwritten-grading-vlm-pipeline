@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Qwen3-VL-2B QLoRA training/evaluation for dev216.
+"""Qwen3-VL-2B QLoRA training/evaluation for TITAN V機.
 
 Hardware contract: one NVIDIA TITAN V 12 GB (Volta, sm_70), NVIDIA driver
 570 series.  Volta has no BF16 support, so this script always uses fp16

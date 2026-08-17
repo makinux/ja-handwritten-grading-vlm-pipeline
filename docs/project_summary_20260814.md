@@ -51,7 +51,7 @@ Qwen3-VL-2B QLoRA(TITAN V 単機、9,204 件・2.5 時間):
 - **eval400 固定層化セット**: fresh 生成 507 件(ファミリ層化+下位区分全数+曖昧+対照)、再ラベルマップ付き。
 - **訓練系**(`train/train_qlora.py`): TITAN V(sm_70)対応 QLoRA、前後評価内蔵、ノートブック(`kaggle/`)と同一ハイパラ。
 - **開発プロセス**: 実装=Codex/レビュー=Fable 5 の分業を全タスク(G〜L、約 12 回転)に適用。各タスクに実行可能な受け入れ条件+レビュー側の独立実測一致検証。
-- **運用知見**(文書化済み): dev187 はホスト RAM 30GB のため追加 llama-server は同時 1 台まで/kernel 6.17 系は amdgpu-dkms 6.12 とビルド非互換(initramfs 欠落 → boot panic の根本原因、6.8 固定で恒久対策)/dev216(sm_70)は conda torch 2.5.1+cu121+MKL 2023.1 固定/日本語フォントはローカルのみ=レンダリングはローカル実行 → 画像転送。
+- **運用知見**(文書化済み): EVO-X2機 はホスト RAM 30GB のため追加 llama-server は同時 1 台まで/kernel 6.17 系は amdgpu-dkms 6.12 とビルド非互換(initramfs 欠落 → boot panic の根本原因、6.8 固定で恒久対策)/TITAN V機(sm_70)は conda torch 2.5.1+cu121+MKL 2023.1 固定/日本語フォントはローカルのみ=レンダリングはローカル実行 → 画像転送。
 
 ## 6. 未解決と次の柱(重要度順)
 

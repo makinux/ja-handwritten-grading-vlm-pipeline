@@ -1,6 +1,6 @@
-# dev216 Qwen3-VL-2B QLoRA 実行手順
+# TITAN V機 Qwen3-VL-2B QLoRA 実行手順
 
-この手順は dev216 上で `train/train_qlora.py` を単機・`nohup` 実行するためのものです。スクリプトは Kaggle の `kaggle/qwen3vl_2b_sft.ipynb` と同じ学習条件および評価指標で、LoRA 付与前の base model と学習後 adapter を比較します。
+この手順は TITAN V機 上で `train/train_qlora.py` を単機・`nohup` 実行するためのものです。スクリプトは Kaggle の `kaggle/qwen3vl_2b_sft.ipynb` と同じ学習条件および評価指標で、LoRA 付与前の base model と学習後 adapter を比較します。
 
 ## 1. 前提
 
@@ -21,7 +21,7 @@ pip install "transformers>=4.57,<5" peft bitsandbytes accelerate pillow
 
 sm_70 は PyTorch 2.5 系 + CUDA 12.1 までを安全側の構成として使います。CUDA 12.6 / 12.8 系 wheel や PyTorch 2.7 以降は Volta サポート外となる恐れがあるため使用しません。また、Transformers 5.x は PyTorch の要求バージョンが上がるため `<5` に固定します。
 
-PyTorch は pip ではなく conda で導入します。pip の `torch==2.5.1` は依存 `nvidia-cudnn-cu12==9.1.0.70` を固定要求しますが、この版は index から削除済みで解決不能です(2026-08 に dev216 で実測)。conda の pytorch チャネルは 2.5.1 が最終リリースで、cudnn を conda パッケージとして同梱するためこの問題を回避できます。導入後、GPU と compute capability を確認できます。
+PyTorch は pip ではなく conda で導入します。pip の `torch==2.5.1` は依存 `nvidia-cudnn-cu12==9.1.0.70` を固定要求しますが、この版は index から削除済みで解決不能です(2026-08 に TITAN V機 で実測)。conda の pytorch チャネルは 2.5.1 が最終リリースで、cudnn を conda パッケージとして同梱するためこの問題を回避できます。導入後、GPU と compute capability を確認できます。
 
 ```bash
 python - <<'PY'
@@ -62,7 +62,7 @@ Task G の出力を次の形で配置します。
 cd ~/ja-grading
 python train/train_qlora.py \
   --data-dir ~/ja-grading/data/sft \
-  --out-dir ~/ja-grading/out/dev216-smoke \
+  --out-dir ~/ja-grading/out/TITAN V機-smoke \
   --smoke
 ```
 
@@ -71,11 +71,11 @@ python train/train_qlora.py \
 既定値は train 3,000 件、1 epoch、LoRA `r=16` / `alpha=16`、学習率 `2e-4`、batch 1、gradient accumulation 8、評価 200 件です。
 
 ```bash
-mkdir -p ~/ja-grading/out/dev216
+mkdir -p ~/ja-grading/out/TITAN V機
 cd ~/ja-grading
 nohup python train/train_qlora.py \
   --data-dir ~/ja-grading/data/sft \
-  --out-dir ~/ja-grading/out/dev216 \
+  --out-dir ~/ja-grading/out/TITAN V機 \
   > ~/ja-grading/out/train.log 2>&1 &
 echo $!
 ```
@@ -91,9 +91,9 @@ watch -n 2 nvidia-smi
 
 ## 6. 成果物
 
-- `~/ja-grading/out/dev216/lora_adapters/`: LoRA adapter と processor
-- `~/ja-grading/out/dev216/checkpoints/`: Trainer checkpoint（最大 2 世代）
-- `~/ja-grading/out/dev216/eval_results.json`: before / after の行別出力、集約指標、実効設定、所要時間
+- `~/ja-grading/out/TITAN V機/lora_adapters/`: LoRA adapter と processor
+- `~/ja-grading/out/TITAN V機/checkpoints/`: Trainer checkpoint（最大 2 世代）
+- `~/ja-grading/out/TITAN V機/eval_results.json`: before / after の行別出力、集約指標、実効設定、所要時間
 
 ## 7. トラブルシュート
 
@@ -104,7 +104,7 @@ watch -n 2 nvidia-smi
 ```bash
 python train/train_qlora.py \
   --data-dir ~/ja-grading/data/sft \
-  --out-dir ~/ja-grading/out/dev216 \
+  --out-dir ~/ja-grading/out/TITAN V機 \
   --max-pixels $((640*905)) --eval-batch 1 --grad-accum 8
 ```
 
@@ -115,7 +115,7 @@ python train/train_qlora.py \
 ```bash
 python train/train_qlora.py \
   --data-dir ~/ja-grading/data/sft \
-  --out-dir ~/ja-grading/out/dev216-fp16 \
+  --out-dir ~/ja-grading/out/TITAN V機-fp16 \
   --no-quant --max-pixels $((640*905)) --eval-batch 1
 ```
 
@@ -126,7 +126,7 @@ python train/train_qlora.py \
 ```bash
 python train/train_qlora.py \
   --data-dir ~/ja-grading/data/sft \
-  --out-dir ~/ja-grading/out/dev216-lr1e4 \
+  --out-dir ~/ja-grading/out/TITAN V機-lr1e4 \
   --lr 1e-4
 ```
 
@@ -137,7 +137,7 @@ python train/train_qlora.py \
 ```bash
 nohup python train/train_qlora.py \
   --data-dir ~/ja-grading/data/sft \
-  --out-dir ~/ja-grading/out/dev216 \
+  --out-dir ~/ja-grading/out/TITAN V機 \
   --resume --skip-before-eval \
   > ~/ja-grading/out/train.log 2>&1 &
 ```

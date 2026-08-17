@@ -1,11 +1,11 @@
-# Phase 1' 初回 SFT 報告(Qwen3-VL-2B QLoRA、dev216 TITAN V)
+# Phase 1' 初回 SFT 報告(Qwen3-VL-2B QLoRA、TITAN V機 TITAN V)
 
 実施日: 2026-08-13/訓練系: `train/train_qlora.py`(a336c06)/データ: `out/gen10k` 由来の
 SFT 分割(train 9,204/val 489/test 307、pair 単位分割、eval-200+双子は test に隔離)。
-実行環境: dev216(NVIDIA TITAN V 12GB, Volta sm_70)、fp16+SDPA 固定、4bit NF4(QLoRA)、
+実行環境: TITAN V機(NVIDIA TITAN V 12GB, Volta sm_70)、fp16+SDPA 固定、4bit NF4(QLoRA)、
 torch 2.5.1+cu121(conda)/transformers 4.57.6/peft 0.20/bitsandbytes 0.50。
-機械可読の要約: `docs/phase1_2b_sft_results.json`(行別付きフルログは dev216
-`~/ja-grading/out/dev216/eval_results.json`、ローカル `out/dev216_sft/`)。
+機械可読の要約: `docs/phase1_2b_sft_results.json`(行別付きフルログは TITAN V機
+`~/ja-grading/out/TITAN V機/eval_results.json`、ローカル `out/TITAN V機_sft/`)。
 
 ## 設定(Kaggle ノートブックと同一。比較可能性を維持)
 
@@ -47,7 +47,7 @@ TRAIN_LIMIT=3000(シャッフルなし先頭)/1 epoch/LoRA r=16, α=16(言語層
    と誤分類、「計算/符号」3 件全てを「概念/符号・乗算」と誤分類。いずれも誤りスパンの
    見た目がほぼ同一で、説明句(逐語化の誤解の語り)の読解が必要な区別。対策候補:
    フルデータ(9,204)訓練での該当クラス増量/クラス定義の再検討(統合 or 判別特徴の明示)。
-5. **TITAN V 単機で 1 サイクル 65 分。** 2B 縮小構成の反復実験は dev216 で十分高速
+5. **TITAN V 単機で 1 サイクル 65 分。** 2B 縮小構成の反復実験は TITAN V機 で十分高速
    (Kaggle 想定 4-6h → 実測 1h)。フルデータでも ~2.5-3h/サイクルの見込み。
 
 ## 追記: フルデータ第2ラウンド(9,204 件、同日実施)
@@ -76,12 +76,12 @@ TRAIN_LIMIT=9204(全訓練データ)で同一構成の第 2 ラウンドを実�
   説明句に下位区分の判別特徴を強制(生成側の対処)、(c) 現行維持で sim2real 後に再判定。
   **設計判断事項として次回レビューに付す。**
 
-成果物: dev216 `~/ja-grading/out/dev216-full/{lora_adapters,eval_results.json}`、
-ローカル `out/dev216_sft/eval_results_full.json`。
+成果物: TITAN V機 `~/ja-grading/out/TITAN V機-full/{lora_adapters,eval_results.json}`、
+ローカル `out/TITAN V機_sft/eval_results_full.json`。
 
 ## 追記2: 配備経路検証 — llama.cpp 同一ハーネス再評価(同日)
 
-フル訓練済み LoRA をマージ(dev216 CPU)→ GGUF F16(convert_hf_to_gguf.py、b10255)→
+フル訓練済み LoRA をマージ(TITAN V機 CPU)→ GGUF F16(convert_hf_to_gguf.py、b10255)→
 Q8_0 量子化 → EVO-X2 llama.cpp(Vulkan、ポート 8082、mmproj は既存 Q8 を再利用)で
 サーブし、**ゼロショット表と同一プロトコル**(seed77・n=200・`--coords relative`・
 temperature 0)で再評価。5.9 秒/件、parse 失敗 0。評価ハーネスの座標モードは
@@ -115,13 +115,13 @@ temperature 0)で再評価。5.9 秒/件、parse 失敗 0。評価ハーネス�
 - over-correction は 10.1% と SFT 後も残存(ゼロショット 8.7% と同水準)。忠実転記の
   強化は SFT だけでは不足で、報酬設計(RL/DPO)または訓練データ側の対処が次の論点。
 
-成果物: dev187 `~/models/qwen3vl-2B-sft-Q8_0.gguf`+`~/ja-grading/out/eval_2b_sft/`、
+成果物: EVO-X2機 `~/models/qwen3vl-2B-sft-Q8_0.gguf`+`~/ja-grading/out/eval_2b_sft/`、
 サマリ `docs/phase1_2b_sft_llamacpp_summary.json`。サーバ: :8082(SFT)/:8081(ベース)/
 :10000(gpt-oss、ユーザー管理)。
 
 ## 追記3: 配備ギャップ ablation 完結(2026-08-14)
 
-追記2 のギャップ要因候補を分解実験で判定した。全 run は llama.cpp Q8/Vulkan(dev187)、
+追記2 のギャップ要因候補を分解実験で判定した。全 run は llama.cpp Q8/Vulkan(EVO-X2機)、
 `--coords relative`、temperature 0。
 
 | Run | 構成 | 幻覚 | BACC | IoU@0.5 | 種別 | 点数一致 |
@@ -151,13 +151,13 @@ temperature 0)で再評価。5.9 秒/件、parse 失敗 0。評価ハーネス�
 IoU@0.5 0.795 ✅(≥0.70)/点数完全一致 0.935 ✅(≥0.80)/種別 0.647 ✗(≥0.85、
 タキソノミ粒度の設計判断事項)。
 
-運用ノート追補: ablation 中に dev187 のホスト RAM 枯渇(30GB に対し 2B サーバ 1 台
+運用ノート追補: ablation 中に EVO-X2機 のホスト RAM 枯渇(30GB に対し 2B サーバ 1 台
 RSS ~10GB×複数+D ステート固着)→ 再起動で復旧。その再起動で kernel 6.17 系の
 initramfs 欠落(ROCm amdgpu-dkms 6.12.12 が 6.17 でビルド不能→postinst 中断が根本原因)
 による boot panic が顕在化 → 6.8.0-137 で復旧・6.17 系削除+GRUB 既定固定を実施。
-**教訓: dev187 の追加 llama-server は同時 1 台まで/カーネル自動更新は要監視。**
-評価成果物: dev187 `~/ja-grading/out/{eval_ab_a0,eval_ab_a2,eval_ab_a1,eval_ab_d2,
-eval_2b_sft_nosys}`、ローカル `out/dev216_sft/`。
+**教訓: EVO-X2機 の追加 llama-server は同時 1 台まで/カーネル自動更新は要監視。**
+評価成果物: EVO-X2機 `~/ja-grading/out/{eval_ab_a0,eval_ab_a2,eval_ab_a1,eval_ab_d2,
+eval_2b_sft_nosys}`、ローカル `out/TITAN V機_sft/`。
 
 ## 重要な限定
 
@@ -181,9 +181,9 @@ eval_2b_sft_nosys}`、ローカル `out/dev216_sft/`。
 
 ## 運用ノート
 
-- dev216 の物理占有は排他: 訓練中は physmoe llama-server(ポート 8201、VRAM 6.8GB)を
+- TITAN V機 の物理占有は排他: 訓練中は 別プロジェクト llama-server(ポート 8201、VRAM 6.8GB)を
   停止する必要がある(同時実行は双方 OOM 死)。今回は許可を得て停止→訓練→**再起動済み**
-  (health OK)。再起動コマンドは dev216 `~/ja-grading/llama_server_restart_cmd.txt`。
+  (health OK)。再起動コマンドは TITAN V機 `~/ja-grading/llama_server_restart_cmd.txt`。
 - 環境: conda env `ja`。pip の torch 2.5.1 は依存 cudnn ピン消滅で解決不能→conda 経路。
   conda pytorch は MKL 2025 と非互換(iJIT_NotifyEvent)→ `mkl=2023.1.0` に固定済み。
-- 成果物: dev216 `~/ja-grading/out/dev216/{lora_adapters,checkpoints,eval_results.json}`。
+- 成果物: TITAN V機 `~/ja-grading/out/TITAN V機/{lora_adapters,checkpoints,eval_results.json}`。
