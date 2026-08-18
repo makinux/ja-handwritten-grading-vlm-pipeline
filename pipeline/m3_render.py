@@ -4,7 +4,7 @@
 - 一様レンダリング原則: 全サンプルを単一パイプラインで一括レンダリング。
 - ペア生成原則: スタイルと文字 ID ベース乱数を pair_id から導出し、誤り
   あり/なしの双子で非変更文字を共有する。
-- 字形は暫定フォント(自前収集字形バンク=統合収集プログラムは TODO)。
+- 字形は既定で従来フォント、任意で ETL 疑似筆者グリフバンクを使う。
 - 撮像層は簡易ノイズのみ(本格的なドメインランダム化は Phase 0 後半)。
 - 座標 GT: 文字ごとの実インク mask から bbox を作り、ステップ bbox と
   誤りスパン bbox(跨行対応)をピクセル絶対座標で出力する。
@@ -12,9 +12,15 @@
 import hashlib
 import math
 import os
+from pathlib import Path
 import random
 
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+
+try:  # script import と package import の両方に対応する。
+    from . import glyph_bank as glyph_bank_module
+except ImportError:  # pragma: no cover - pipeline script execution path
+    import glyph_bank as glyph_bank_module
 
 FONT_CANDIDATES = [
     # Docker (Linux)
@@ -33,6 +39,8 @@ MARGIN_X, TOP_Y = 150, 140
 LINE_GAP = 96
 BBOX_MARGIN_PX = 2
 BLUR_RADIUS = 0.4
+
+_ETL_GLYPH_BANK = None
 
 
 def available_fonts():
@@ -73,6 +81,24 @@ def _seed_from_parts(*parts):
     payload = "".join(f"{type(p).__name__}:{len(str(p))}:{p}|" for p in parts)
     return int.from_bytes(
         hashlib.sha256(payload.encode("utf-8")).digest()[:8], "big")
+
+
+def _pseudo_writer_id(pair_id):
+    digest = hashlib.sha256(
+        f"pseudo-writer:{pair_id}".encode("utf-8")).hexdigest()[:16]
+    return f"pw-{digest}"
+
+
+def _get_etl_glyph_bank():
+    """既定 index を一度だけ遅延ロードする。未構築なら実データから作る。"""
+    global _ETL_GLYPH_BANK
+    if _ETL_GLYPH_BANK is None:
+        index_path = Path(os.environ.get(
+            "ETL_GLYPH_INDEX", glyph_bank_module.DEFAULT_INDEX_PATH))
+        if not index_path.is_file():
+            glyph_bank_module.build_index(index_path.parent, index_path)
+        _ETL_GLYPH_BANK = glyph_bank_module.GlyphBank(index_path)
+    return _ETL_GLYPH_BANK
 
 
 def _char_variation(pair_id, step_key, stable_char_index, char, jitter):
@@ -192,10 +218,67 @@ def _draw_character(img, origin, char, font, ink):
             min(PAGE_H, ink_bbox[3] + BBOX_MARGIN_PX)]
 
 
+def _draw_etl_character(img, cell_origin, cell_width, char, font, glyph, ink):
+    """ETL ink mask を font の同文字 ink 高さへ合わせ、セル中央に合成する。"""
+    glyph_bbox = glyph.getbbox()
+    if glyph_bbox is None:
+        return None
+    glyph = glyph.crop(glyph_bbox)
+    metric = font.getbbox(char)
+    if metric is None:
+        target_height = max(1, font.size)
+        vertical_offset = 0
+    else:
+        target_height = max(1, metric[3] - metric[1])
+        vertical_offset = metric[1]
+    height_scale = target_height / max(1, glyph.height)
+    # '-' 等の横長記号もセルから逸脱しないよう幅だけ上限を置く。基本 scale
+    # は必ず ink height から決める。
+    width_scale = max(1.0, cell_width * 0.90) / max(1, glyph.width)
+    scale = min(height_scale, width_scale)
+    target_size = (
+        max(1, round(glyph.width * scale)),
+        max(1, round(glyph.height * scale)),
+    )
+    mask = glyph.resize(target_size, Image.Resampling.LANCZOS)
+    local_bbox = mask.getbbox()
+    if local_bbox is None:
+        return None
+
+    cell_x, origin_y = cell_origin
+    left = round(cell_x + (cell_width - mask.width) / 2)
+    top = round(origin_y + vertical_offset)
+    img.paste(ink, (left, top), mask)
+    ink_bbox = (left + local_bbox[0], top + local_bbox[1],
+                left + local_bbox[2], top + local_bbox[3])
+    return [max(0, ink_bbox[0] - BBOX_MARGIN_PX),
+            max(0, ink_bbox[1] - BBOX_MARGIN_PX),
+            min(PAGE_W, ink_bbox[2] + BBOX_MARGIN_PX),
+            min(PAGE_H, ink_bbox[3] + BBOX_MARGIN_PX)]
+
+
+def _draw_from_source(img, cell_origin, cell_width, char, font, style,
+                      glyph_source, bank, pseudo_writer_id):
+    if glyph_source == "etl":
+        glyph, glyph_info = bank.get(char, pseudo_writer_id)
+        if glyph is not None:
+            bbox = _draw_etl_character(
+                img, cell_origin, cell_width, char, font, glyph, style["ink"])
+            if bbox is not None:
+                return bbox, f"etl:{glyph_info['family']}"
+    bbox = _draw_character(
+        img, cell_origin, char, font, style["ink"])
+    return bbox, "font"
+
+
 def _render_line(img, measure, pair_id, key, text, base_y, font, style,
-                 alignment, pitch_mode):
-    """1 論理行を描画し、文字 bbox と使用した物理行数を返す。"""
+                 alignment, pitch_mode, glyph_source, bank, pseudo_writer_id):
+    """1 論理行を描画し、文字 bbox と使用した物理行数を返す。
+
+    問題文は ``glyph_source="etl"`` の場合も常に印刷フォントで描画する。
+    """
     start_x = MARGIN_X if key == "problem" else MARGIN_X + 60
+    line_glyph_source = "font" if key == "problem" else glyph_source
     records = []
     max_row = 0
 
@@ -212,11 +295,13 @@ def _render_line(img, measure, pair_id, key, text, base_y, font, style,
             dx, dy, _advance_noise = _char_variation(
                 pair_id, key, stable_id, char, style["jitter"])
             if not char.isspace():
-                bbox = _draw_character(img, (x + dx, y + dy), char, font,
-                                       style["ink"])
+                bbox, actual_source = _draw_from_source(
+                    img, (x + dx, y + dy), pitch, char, font, style,
+                    line_glyph_source, bank, pseudo_writer_id)
                 if bbox is not None:
                     records.append({"i": index, "row": row, "char": char,
-                                    "bbox": bbox})
+                                    "bbox": bbox,
+                                    "glyph_source": actual_source})
         return records, max_row + 1
 
     x = start_x
@@ -230,17 +315,23 @@ def _render_line(img, measure, pair_id, key, text, base_y, font, style,
             row += 1
             x = MARGIN_X + 100
         if not char.isspace():
-            bbox = _draw_character(img, (x + dx, base_y + row * LINE_GAP + dy),
-                                   char, font, style["ink"])
+            bbox, actual_source = _draw_from_source(
+                img, (x + dx, base_y + row * LINE_GAP + dy),
+                max(advance, style["size"]), char, font, style,
+                line_glyph_source, bank, pseudo_writer_id)
             if bbox is not None:
                 records.append({"i": index, "row": row, "char": char,
-                                "bbox": bbox})
+                                "bbox": bbox,
+                                "glyph_source": actual_source})
         x += advance + advance_noise
     return records, row + 1
 
 
-def render_record(rec, out_png, debug_png=None, pitch_mode=None):
+def render_record(rec, out_png, debug_png=None, pitch_mode=None,
+                  glyph_source="font"):
     """1 レコードを PNG 化し、後方互換キーを含む座標メタデータを返す。"""
+    if glyph_source not in {"font", "etl"}:
+        raise ValueError("glyph_source は 'font' または 'etl' を指定してください")
     style = style_from_pair(rec["pair_id"])
     if pitch_mode is not None:
         style["pitch_mode"] = pitch_mode
@@ -249,6 +340,9 @@ def render_record(rec, out_png, debug_png=None, pitch_mode=None):
         raise ValueError("pitch_mode は 'grid' または 'natural' を指定してください")
 
     font = ImageFont.truetype(style["font"], style["size"])
+    pseudo_writer_id = (
+        _pseudo_writer_id(rec["pair_id"]) if glyph_source == "etl" else None)
+    bank = _get_etl_glyph_bank() if glyph_source == "etl" else None
     img = Image.new("RGB", (PAGE_W, PAGE_H), (250, 248, 243))
     measure = ImageDraw.Draw(img)
 
@@ -268,7 +362,7 @@ def render_record(rec, out_png, debug_png=None, pitch_mode=None):
     for key, text in lines:
         records, physical_rows = _render_line(
             img, measure, rec["pair_id"], key, text, y, font, style,
-            alignments[key], pitch_mode)
+            alignments[key], pitch_mode, glyph_source, bank, pseudo_writer_id)
         char_boxes[key] = records
         y += physical_rows * LINE_GAP
 
@@ -326,10 +420,22 @@ def render_record(rec, out_png, debug_png=None, pitch_mode=None):
                 debug_draw.rectangle(box, outline=(210, 30, 30), width=3)
         debug.save(debug_png)
 
+    # problem 行は char_boxes_px と同様に provenance 集計の対象外とする。
+    rendered_characters = [
+        record for key, records in char_boxes.items() if key != "problem"
+        for record in records]
+    fallback_count = sum(
+        record["glyph_source"] == "font" for record in rendered_characters)
+    glyph_fallback_rate = (
+        fallback_count / len(rendered_characters)
+        if glyph_source == "etl" and rendered_characters else 0.0)
+
     return {
         "style_id": style["style_id"],
         "font": os.path.basename(style["font"]),
-        "writer_consistent": True,
+        "writer_consistent": glyph_source != "etl",
+        "pseudo_writer_id": pseudo_writer_id,
+        "glyph_fallback_rate": glyph_fallback_rate,
         "noise_profile": "bootstrap-dots-blur",
         "page": {"w": PAGE_W, "h": PAGE_H},
         "label_by_construction": True,
