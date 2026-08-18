@@ -336,6 +336,105 @@ def test_etl_fallback_rate_matches_audit():
         path.unlink(missing_ok=True)
 
 
+def test_realism_etl_twin_boxes():
+    """realism 有効時も双子の変異スパン外 bbox は完全一致する。"""
+    _require_etl()
+    gold_path, gold = _render(
+        _control_twin(), "realism_etl_gold",
+        glyph_source="etl", realism={})
+    mutant_path, mutant = _render(
+        SYNTHETIC_ERROR_RECORD, "realism_etl_mutant",
+        glyph_source="etl", realism={})
+    try:
+        assert gold["realism"]["applied"] is True
+        assert (gold["realism"]["strength_profile_id"]
+                == mutant["realism"]["strength_profile_id"])
+        gold_s1 = {item["i"]: item for item in gold["char_boxes_px"]["s1"]}
+        mutant_s1 = {
+            item["i"]: item for item in mutant["char_boxes_px"]["s1"]
+        }
+        for gold_index in list(range(0, 3)) + list(range(5, 11)):
+            mutant_index = gold_index if gold_index < 3 else gold_index + 1
+            left, right = gold_s1[gold_index], mutant_s1[mutant_index]
+            assert left["char"] == right["char"]
+            assert left["row"] == right["row"]
+            assert left["bbox"] == right["bbox"]
+            assert left["glyph_source"] == right["glyph_source"]
+        assert gold["char_boxes_px"]["s2"] == mutant["char_boxes_px"]["s2"]
+    finally:
+        gold_path.unlink(missing_ok=True)
+        mutant_path.unlink(missing_ok=True)
+
+
+def test_realism_png_determinism():
+    """realism 有効の同一 ETL レコードは PNG SHA-256 が一致する。"""
+    _require_etl()
+    record = _simple_etl_record("1+2=3/4", "synthetic-realism-determinism")
+    first_path, first = _render(
+        record, "realism_det_1", glyph_source="etl", realism={})
+    second_path, second = _render(
+        record, "realism_det_2", glyph_source="etl", realism={})
+    try:
+        assert _sha256(first_path) == _sha256(second_path)
+        assert first["realism"] == second["realism"]
+    finally:
+        first_path.unlink(missing_ok=True)
+        second_path.unlink(missing_ok=True)
+
+
+def test_realism_transformed_bbox_contains_ink_mass():
+    """最終変形 mask の bbox 外に残る撮像後インク質量は 0.1% 未満。"""
+    _require_etl()
+    visible = "1234567890"
+    spaced = "  ".join(visible)
+    record = _simple_etl_record(spaced, "synthetic-realism-mass")
+    blank = copy.deepcopy(record)
+    blank["gold_solution"][0]["text"] = " " * len(spaced)
+    ink_path, metadata = _render(
+        record, "realism_mass_ink", glyph_source="etl", realism={})
+    blank_path, _ = _render(
+        blank, "realism_mass_blank", glyph_source="etl", realism={})
+    try:
+        with Image.open(ink_path) as ink_image, Image.open(blank_path) as blank_image:
+            difference = ImageChops.difference(
+                ink_image.convert("RGB"), blank_image.convert("RGB"))
+            boxes = metadata["char_boxes_px"]["s1"]
+            assert len(boxes) == len(visible)
+            for item in boxes:
+                x1, y1, x2, y2 = item["bbox"]
+                inner_mass = _mass(difference.crop((x1, y1, x2, y2)))
+                expanded = (max(0, x1 - 1), max(0, y1 - 1),
+                            min(difference.width, x2 + 1),
+                            min(difference.height, y2 + 1))
+                outer_mass = _mass(difference.crop(expanded)) - inner_mass
+                ratio = outer_mass / max(1, inner_mass)
+                assert ratio < 0.001, (
+                    f"realism 後の文字 {item['char']!r} で bbox 外インク比 "
+                    f"{ratio:.6f}")
+    finally:
+        ink_path.unlink(missing_ok=True)
+        blank_path.unlink(missing_ok=True)
+
+
+def test_realism_limits_rejected():
+    """字形ラベル保護上限を超える realism 設定は拒否する。"""
+    path = _path("realism_limit")
+    try:
+        try:
+            m3_render.render_record(
+                _control_twin(), str(path), realism={
+                    "rotation_degrees": (
+                        m3_render.REALISM_LIMITS["rotation_degrees"] + 0.01
+                    ),
+                })
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("REALISM_LIMITS 超過で ValueError が出なかった")
+    finally:
+        path.unlink(missing_ok=True)
+
+
 def main():
     tests = [
         test_twin_boxes,
@@ -348,6 +447,10 @@ def main():
         test_etl_png_determinism,
         test_etl_font_fallback_source,
         test_etl_fallback_rate_matches_audit,
+        test_realism_etl_twin_boxes,
+        test_realism_png_determinism,
+        test_realism_transformed_bbox_contains_ink_mass,
+        test_realism_limits_rejected,
     ]
     passed = 0
     skipped = 0

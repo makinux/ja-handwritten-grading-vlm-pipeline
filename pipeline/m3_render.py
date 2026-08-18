@@ -19,8 +19,13 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 try:  # script import と package import の両方に対応する。
     from . import glyph_bank as glyph_bank_module
+    from . import realism as realism_module
 except ImportError:  # pragma: no cover - pipeline script execution path
     import glyph_bank as glyph_bank_module
+    import realism as realism_module
+
+# 呼び出し側・テストが renderer からも上限を参照できるよう再公開する。
+REALISM_LIMITS = realism_module.REALISM_LIMITS
 
 FONT_CANDIDATES = [
     # Docker (Linux)
@@ -189,8 +194,8 @@ def _character_alignment(rec, steps):
     return result, "exact" if exact else "fallback"
 
 
-def _draw_character(img, origin, char, font, ink):
-    """文字を一時 L mask に描き、ページへ合成して実インク bbox を返す。"""
+def _font_character_mask(origin, char, font):
+    """font 文字を一時 L mask に描き、mask とページ上の左上を返す。"""
     ox, oy = origin
     metric = font.getbbox(char)
     if metric is None:
@@ -205,9 +210,17 @@ def _draw_character(img, origin, char, font, ink):
     mask = Image.new("L", (width, height), 0)
     md = ImageDraw.Draw(mask)
     md.text((ox - left, oy - top), char, font=font, fill=255)
+    if mask.getbbox() is None:
+        return None
+    return mask, left, top
+
+
+def _paste_character_mask(img, mask, left, top, ink):
+    """最終 L mask を合成し、その mask から 2 px margin bbox を作る。"""
     local_bbox = mask.getbbox()
     if local_bbox is None:
         return None
+    left, top = round(left), round(top)
     img.paste(ink, (left, top), mask)
 
     ink_bbox = (left + local_bbox[0], top + local_bbox[1],
@@ -218,8 +231,17 @@ def _draw_character(img, origin, char, font, ink):
             min(PAGE_H, ink_bbox[3] + BBOX_MARGIN_PX)]
 
 
-def _draw_etl_character(img, cell_origin, cell_width, char, font, glyph, ink):
-    """ETL ink mask を font の同文字 ink 高さへ合わせ、セル中央に合成する。"""
+def _draw_character(img, origin, char, font, ink):
+    """文字を一時 L mask に描き、ページへ合成して実インク bbox を返す。"""
+    result = _font_character_mask(origin, char, font)
+    if result is None:
+        return None
+    mask, left, top = result
+    return _paste_character_mask(img, mask, left, top, ink)
+
+
+def _etl_character_mask(cell_origin, cell_width, char, font, glyph):
+    """ETL ink mask を font の同文字 ink 高さへ合わせて配置する。"""
     glyph_bbox = glyph.getbbox()
     if glyph_bbox is None:
         return None
@@ -248,31 +270,54 @@ def _draw_etl_character(img, cell_origin, cell_width, char, font, glyph, ink):
     cell_x, origin_y = cell_origin
     left = round(cell_x + (cell_width - mask.width) / 2)
     top = round(origin_y + vertical_offset)
-    img.paste(ink, (left, top), mask)
-    ink_bbox = (left + local_bbox[0], top + local_bbox[1],
-                left + local_bbox[2], top + local_bbox[3])
-    return [max(0, ink_bbox[0] - BBOX_MARGIN_PX),
-            max(0, ink_bbox[1] - BBOX_MARGIN_PX),
-            min(PAGE_W, ink_bbox[2] + BBOX_MARGIN_PX),
-            min(PAGE_H, ink_bbox[3] + BBOX_MARGIN_PX)]
+    return mask, left, top
+
+
+def _draw_etl_character(img, cell_origin, cell_width, char, font, glyph, ink):
+    """ETL mask をページへ合成して実インク bbox を返す。"""
+    result = _etl_character_mask(cell_origin, cell_width, char, font, glyph)
+    if result is None:
+        return None
+    mask, left, top = result
+    return _paste_character_mask(img, mask, left, top, ink)
 
 
 def _draw_from_source(img, cell_origin, cell_width, char, font, style,
-                      glyph_source, bank, pseudo_writer_id):
+                      glyph_source, bank, pseudo_writer_id,
+                      realism_profile=None, key=None, stable_char_id=None,
+                      realism_placement=None):
+    mask_result = None
+    actual_source = "font"
     if glyph_source == "etl":
         glyph, glyph_info = bank.get(char, pseudo_writer_id)
         if glyph is not None:
-            bbox = _draw_etl_character(
-                img, cell_origin, cell_width, char, font, glyph, style["ink"])
-            if bbox is not None:
-                return bbox, f"etl:{glyph_info['family']}"
-    bbox = _draw_character(
-        img, cell_origin, char, font, style["ink"])
-    return bbox, "font"
+            mask_result = _etl_character_mask(
+                cell_origin, cell_width, char, font, glyph)
+            if mask_result is not None:
+                actual_source = f"etl:{glyph_info['family']}"
+    if mask_result is None:
+        mask_result = _font_character_mask(cell_origin, char, font)
+    if mask_result is None:
+        return None, actual_source
+
+    mask, left, top = mask_result
+    if realism_profile is not None:
+        placement = realism_placement or {
+            "size_scale": 1.0, "rotation_degrees": 0.0,
+        }
+        mask, offset = realism_module.transform_mask(
+            mask, realism_profile, key, stable_char_id,
+            placement["size_scale"], placement["rotation_degrees"],
+        )
+        left += offset[0]
+        top += offset[1]
+    bbox = _paste_character_mask(img, mask, left, top, style["ink"])
+    return bbox, actual_source
 
 
 def _render_line(img, measure, pair_id, key, text, base_y, font, style,
-                 alignment, pitch_mode, glyph_source, bank, pseudo_writer_id):
+                 alignment, pitch_mode, glyph_source, bank, pseudo_writer_id,
+                 realism_profile=None):
     """1 論理行を描画し、文字 bbox と使用した物理行数を返す。
 
     問題文は ``glyph_source="etl"`` の場合も常に印刷フォントで描画する。
@@ -294,10 +339,15 @@ def _render_line(img, measure, pair_id, key, text, base_y, font, style,
             y = base_y + row * LINE_GAP
             dx, dy, _advance_noise = _char_variation(
                 pair_id, key, stable_id, char, style["jitter"])
+            placement = realism_module.placement_parameters(
+                realism_profile, key, stable_id, row, x, pitch, pitch_mode)
             if not char.isspace():
                 bbox, actual_source = _draw_from_source(
-                    img, (x + dx, y + dy), pitch, char, font, style,
-                    line_glyph_source, bank, pseudo_writer_id)
+                    img, (x + dx + placement["spacing_offset_px"],
+                          y + dy + placement["baseline_offset_px"]),
+                    pitch, char, font, style, line_glyph_source, bank,
+                    pseudo_writer_id, realism_profile, key, stable_id,
+                    placement)
                 if bbox is not None:
                     records.append({"i": index, "row": row, "char": char,
                                     "bbox": bbox,
@@ -314,11 +364,17 @@ def _render_line(img, measure, pair_id, key, text, base_y, font, style,
         if x + advance > PAGE_W - MARGIN_X:
             row += 1
             x = MARGIN_X + 100
+        placement = realism_module.placement_parameters(
+            realism_profile, key, stable_id, row, x,
+            max(advance, style["size"]), pitch_mode)
         if not char.isspace():
             bbox, actual_source = _draw_from_source(
-                img, (x + dx, base_y + row * LINE_GAP + dy),
+                img, (x + dx + placement["spacing_offset_px"],
+                      base_y + row * LINE_GAP + dy
+                      + placement["baseline_offset_px"]),
                 max(advance, style["size"]), char, font, style,
-                line_glyph_source, bank, pseudo_writer_id)
+                line_glyph_source, bank, pseudo_writer_id,
+                realism_profile, key, stable_id, placement)
             if bbox is not None:
                 records.append({"i": index, "row": row, "char": char,
                                 "bbox": bbox,
@@ -328,7 +384,7 @@ def _render_line(img, measure, pair_id, key, text, base_y, font, style,
 
 
 def render_record(rec, out_png, debug_png=None, pitch_mode=None,
-                  glyph_source="font"):
+                  glyph_source="font", realism=None):
     """1 レコードを PNG 化し、後方互換キーを含む座標メタデータを返す。"""
     if glyph_source not in {"font", "etl"}:
         raise ValueError("glyph_source は 'font' または 'etl' を指定してください")
@@ -342,6 +398,8 @@ def render_record(rec, out_png, debug_png=None, pitch_mode=None,
     font = ImageFont.truetype(style["font"], style["size"])
     pseudo_writer_id = (
         _pseudo_writer_id(rec["pair_id"]) if glyph_source == "etl" else None)
+    realism_profile = realism_module.build_profile(
+        realism, pseudo_writer_id or rec["pair_id"])
     bank = _get_etl_glyph_bank() if glyph_source == "etl" else None
     img = Image.new("RGB", (PAGE_W, PAGE_H), (250, 248, 243))
     measure = ImageDraw.Draw(img)
@@ -362,7 +420,8 @@ def render_record(rec, out_png, debug_png=None, pitch_mode=None,
     for key, text in lines:
         records, physical_rows = _render_line(
             img, measure, rec["pair_id"], key, text, y, font, style,
-            alignments[key], pitch_mode, glyph_source, bank, pseudo_writer_id)
+            alignments[key], pitch_mode, glyph_source, bank, pseudo_writer_id,
+            realism_profile)
         char_boxes[key] = records
         y += physical_rows * LINE_GAP
 
@@ -437,6 +496,7 @@ def render_record(rec, out_png, debug_png=None, pitch_mode=None,
         "pseudo_writer_id": pseudo_writer_id,
         "glyph_fallback_rate": glyph_fallback_rate,
         "noise_profile": "bootstrap-dots-blur",
+        "realism": realism_module.metadata_summary(realism_profile),
         "page": {"w": PAGE_W, "h": PAGE_H},
         "label_by_construction": True,
         "bbox_margin_px": BBOX_MARGIN_PX,

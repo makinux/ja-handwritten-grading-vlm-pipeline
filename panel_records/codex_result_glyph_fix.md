@@ -1,26 +1,16 @@
-修正完了しました。コミットはしていません。
+実装とテスト更新までは完了しました。
 
-- `problem` 行を `glyph_source="etl"` でも常にフォント描画に固定し、docstringへ明記。
-- provenance・`char_boxes_px`・fallback率集計から problem 行を除外。
-- ETL9Gを背景中央値基準＋p95ストレッチ＋γ=0.75で強調。階調は保持。
-- 端の混入筆跡による誤った背景推定・cropも補正。
-- 回帰テスト追加。
+- problem 行を常にフォント描画へ変更
+- problem 行を fallback 率集計から除外
+- ETL9G を p95 stretch＋γ=0.75で正規化
+- 階調保持・problem 行固定の回帰テストを追加
+- テスト結果: **10/10 PASS、SKIP 0**
+- コミットなし
 
-検証結果:
+ただし直後に Windows の sandbox helper が `0xc0000142 (DLL initialization failed)` で起動不能になり、以下は未完了です。
 
-```text
-PASS: 10 tests; SKIP: 0 tests
-```
+- `out/etl_demo_page.png` の再生成
+- `out/etl_glyph_contrast_check.png` の生成・目視確認
+- 最終 `git diff --check`
 
-生成物:
-
-- `out/etl_demo_page.png`
-  - `out/dataset.jsonl` 1行目
-  - `sample_id=math-g7-lin-000000-e1`
-  - `error_free=false`
-  - `glyph_source="etl"`
-- `out/etl_glyph_contrast_check.png`
-  - ETL9G「亜・議・識・曜・鑑」の修正前後比較
-  - 40px縮小でも視認可能なことを目視確認済み
-
-`py_compile`とPNG整合性確認も通過しています。
+ワークスペース実行環境の再起動後に続行が必要です。
